@@ -1,0 +1,73 @@
+# ==============================================================================
+# 3-Phase Agentic CI/CD Pipeline (`Prototype to Production.pdf`, pp. 21-25)
+# - Phase 1 (Pre-Merge CI): Secret/Recipe Leak Audit, A2UI v0.9 Schema Check, Unit Tests
+# - Phase 2 (Post-Merge Staging & Evaluation Gate): Golden ADK Eval Case pass^3 = 1.0
+# - Phase 3 (Gated Production Rollout): Vertex AI Agent Engine / Cloud Run Canary
+# ==============================================================================
+name: Process Hypothesis Agent CI/CD
+
+on:
+  push:
+    branches: [master, main, "feat/**"]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  phase1-pre-merge-ci:
+    name: "Phase 1: Pre-Merge CI (Safety Audit, A2UI Schema & Unit Tests)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify Zero Raw Dataset Committed (Confidentiality Gate)
+        run: |
+          if git ls-files --error-unmatch data/raw_wafers.csv 2>/dev/null; then
+            echo "ERROR: Confidential data/raw_wafers.csv must never be tracked in Git."
+            exit 1
+          fi
+
+      - name: Execute data_preprocess Skill L3 Script & Verify 100x100=10,000 Invariant
+        run: |
+          PYTHONPATH=. python3 skills/data_preprocess/scripts/preprocess.py --batches TEMPERATURE PRESSURE STEP_A
+
+      - name: Run Unit, SafetyPlugin & A2UI v0.9 Basic Catalog Tests
+        run: |
+          PYTHONPATH=. python3 -m unittest discover -s tests -p "test_*.py" -v
+
+  phase2-staging-eval-gate:
+    name: "Phase 2: Post-Merge Staging & Golden Trajectory Eval Gate (pass^3 = 1.0)"
+    needs: phase1-pre-merge-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Golden ADK Eval Case (Glass-Box IN_ORDER Trajectory + Black-Box Zero-Jargon Outcome)
+        run: |
+          PYTHONPATH=. python3 -m unittest tests.test_suite.TestProcessHypothesisAgentSuite.test_06_golden_eval_case_and_pass_at_3_reliability -v
+
+  phase3-canary-rollout:
+    name: "Phase 3: Gated Canary Deployment Validation (Terraform & Container Check)"
+    needs: phase2-staging-eval-gate
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Verify Container & Terraform IaC Artifacts Exist
+        run: |
+          test -f Dockerfile
+          test -f deployment/terraform/main.tf
+          echo "Canary deployment artifacts verified for Vertex AI Agent Runtime / Cloud Run."

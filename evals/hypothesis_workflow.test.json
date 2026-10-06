@@ -1,0 +1,101 @@
+{
+  "eval_set_id": "process_hypothesis_sme_golden_set",
+  "description": "Golden ADK Eval Case verifying Glass-Box trajectory (IN_ORDER tool call sequence) and Black-Box outcome (zero ML jargon, obfuscated parameter names, color-coded wafer distributions, and A2UI v0.9 surface emission).",
+  "eval_config": {
+    "criteria": {
+      "tool_trajectory_avg_score": {
+        "threshold": 1.0,
+        "match_type": "IN_ORDER"
+      },
+      "response_match_score": {
+        "threshold": 0.85
+      },
+      "pass_at_k": {
+        "k": 3,
+        "pass_k_threshold": 1.0
+      }
+    }
+  },
+  "eval_cases": [
+    {
+      "eval_id": "case_01_sme_wafer_yield_workflow",
+      "initial_session_state": {
+        "app_name": "process_hypothesis_agent",
+        "user_id": "sme_process_engineer_01",
+        "selected_batches": ["TEMPERATURE", "PRESSURE", "STEP_A"]
+      },
+      "conversation": [
+        {
+          "invocation_id": "turn_1_preprocess",
+          "user_content": "Load and obfuscate the 100-wafer dataset for TEMPERATURE, PRESSURE, and STEP_A batches.",
+          "expected_tool_trajectory": [
+            {
+              "tool_name": "run_data_preprocess_skill",
+              "expected_args_subset": {
+                "batches": ["TEMPERATURE", "PRESSURE", "STEP_A"]
+              }
+            }
+          ],
+          "expected_outcome_invariants": {
+            "total_wafers": 100,
+            "total_parameters": 100,
+            "total_parameter_cells": 10000,
+            "forbidden_substrings": [
+              "RECIPE-UL-9941-SECRET",
+              "UNDERFILL_LAMINATION",
+              "PLASMA_ETCH",
+              "THERMAL_CURE",
+              "SPUTTER_DEPOSITION",
+              "CHEMICAL_CMP"
+            ]
+          }
+        },
+        {
+          "invocation_id": "turn_2_generate_hypotheses",
+          "user_content": "Why is my yield dropping? Discover both parameter interactions and whether STEP_A is a bottleneck stage.",
+          "expected_tool_trajectory": [
+            {
+              "tool_name": "generate_hypotheses_tool",
+              "expected_args_subset": {
+                "user_query": "Why is my yield dropping? Discover both parameter interactions and whether STEP_A is a bottleneck stage."
+              }
+            }
+          ],
+          "expected_outcome_invariants": {
+            "min_candidates": 4,
+            "required_hypothesis_types": [
+              "two_way_interaction",
+              "step_level",
+              "single_parameter"
+            ],
+            "requires_a2ui_v09": true
+          }
+        },
+        {
+          "invocation_id": "turn_3_evaluate_interaction",
+          "user_content": "Queue and test the top 2-way interaction and the STEP_A stage hypothesis.",
+          "expected_tool_trajectory": [
+            {
+              "tool_name": "queue_hypothesis_tool"
+            },
+            {
+              "tool_name": "evaluate_queued_hypothesis_tool"
+            }
+          ],
+          "expected_outcome_invariants": {
+            "verdict_badge": "CONFIRMED DRIVER",
+            "requires_wafer_distribution_good_bad": true,
+            "requires_a2ui_v09": true,
+            "forbidden_ml_jargon": [
+              "heteroscedasticity",
+              "multicollinearity",
+              "eigenvalue",
+              "null hypothesis",
+              "ordinary least squares"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

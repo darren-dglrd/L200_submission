@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "process-hypothesis-agent"
+version = "0.1.0"
+description = "Subject-matter-agnostic multi-agent hypothesis generation and ML evaluation system with A2UI v0.9 canvas for non-ML SMEs."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "google-adk>=1.0.0; python_version>='3.10'",
+    "google-genai>=1.0.0; python_version>='3.10'",
+    "fastapi>=0.100.0; python_version>='3.10'",
+    "uvicorn>=0.23.0; python_version>='3.10'",
+    "jsonschema>=4.0.0; python_version>='3.10'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
