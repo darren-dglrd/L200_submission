@@ -77,10 +77,10 @@ def _invoke_live_llm_agent(grounded_prompt: str, enable_live_llm: bool = False) 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
             req_body = json.dumps({
                 "contents": [{"parts": [{"text": grounded_prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 220},
+                "generationConfig": {"temperature": 0.35, "maxOutputTokens": 320},
             }).encode("utf-8")
             req = urllib.request.Request(url, data=req_body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 txt = data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 if txt:
@@ -310,6 +310,8 @@ def run_data_preprocess_skill(
     confirmed: bool = False,
     data_dir: Optional[Path] = None,
     dataset_id: str = "lot_alpha",
+    row_offset: int = 0,
+    row_limit: int = 250,
 ) -> Dict[str, Any]:
     """Execute the `data_preprocess` Agent Skill to obfuscate confidential wafer data and select parameter batches or hand-picked columns."""
     res = obfuscate_and_select_batches(
@@ -317,6 +319,8 @@ def run_data_preprocess_skill(
         custom_columns=custom_columns,
         data_dir=data_dir,
         dataset_id=dataset_id,
+        row_offset=row_offset,
+        row_limit=row_limit,
     )
     if res["selected_columns_count"] > require_hitl_above and not confirmed:
         return {
@@ -349,6 +353,8 @@ class ProcessHypothesisMultiAgentApp:
         batches: List[str],
         custom_columns: Optional[List[str]] = None,
         dataset_id: Optional[str] = None,
+        row_offset: int = 0,
+        row_limit: int = 250,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
         """Invoke the `data_preprocess` Agent Skill and persist `selected_columns` & `dataset_id` in session.state."""
@@ -366,6 +372,8 @@ class ProcessHypothesisMultiAgentApp:
                 custom_columns=custom_columns,
                 data_dir=self.data_dir,
                 dataset_id=active_ds,
+                row_offset=row_offset,
+                row_limit=row_limit,
             )
 
         res, _ = self.observability.trace_span(
@@ -377,6 +385,7 @@ class ProcessHypothesisMultiAgentApp:
                 "dataset_id": active_ds,
                 "batches": batches,
                 "custom_columns_count": len(custom_columns or []),
+                "row_offset": row_offset,
             },
         )
 
@@ -445,7 +454,7 @@ class ProcessHypothesisMultiAgentApp:
         # If frontend passed explicit `selected_columns`, sync them immediately!
         if selected_columns is not None and len(selected_columns) > 0:
             session["state"]["selected_columns"] = list(selected_columns)
-        elif not session["state"].get("selected_columns"):
+        elif not session["state"].get("selected_columns") or active_ds != prev_ds:
             self.preprocess_dataset(batches=["ALL"], dataset_id=active_ds, session_id=session_id)
             session = self.session_service.get_or_create_session(session_id=session_id)
 
@@ -480,6 +489,9 @@ class ProcessHypothesisMultiAgentApp:
 
         candidates = list(discovery_bundle["data"]["candidate_hypotheses"])
         step_attr = discovery_bundle["data"]["step_attribution"]
+        num_wafers = discovery_bundle["data"].get("num_wafers", ds_meta.get("num_wafers", 100))
+        total_cells_scanned = discovery_bundle["data"].get("total_cells_scanned", num_wafers * len(selected_cols))
+        compute_time_ms = discovery_bundle["data"].get("compute_time_ms", 0.0)
 
         # Build concise per-step active selection summary (shows exact selected/20 count + active share)
         step_pills = []
@@ -499,21 +511,18 @@ class ProcessHypothesisMultiAgentApp:
             elif cnt == 0:
                 partial_steps.append(f"`{s['step']}` has **0/20** columns selected (completely excluded from scan)")
 
-        delta_line = ""
+        delta_note = ""
         if added_cols or removed_cols:
             parts = []
             if removed_cols:
                 rem_preview = ", ".join(f"`{c}`" for c in removed_cols[:3])
                 rem_more = f" (+{len(removed_cols) - 3} more)" if len(removed_cols) > 3 else ""
-                parts.append(f"**-{len(removed_cols)} deselected** ({rem_preview}{rem_more})")
+                parts.append(f"-{len(removed_cols)} deselected ({rem_preview}{rem_more})")
             if added_cols:
                 add_preview = ", ".join(f"`{c}`" for c in added_cols[:3])
                 add_more = f" (+{len(added_cols) - 3} more)" if len(added_cols) > 3 else ""
-                parts.append(f"**+{len(added_cols)} added** ({add_preview}{add_more})")
-            delta_line = f"- **Column Selection Updated:** {'; '.join(parts)} — all statistics & ceteris paribus slopes recalculated on your **{len(selected_cols)}/100** active columns.\n"
-
-        ds_line = f"- **Active Dataset:** `{ds_meta['short_name']}` ({ds_meta['description']})\n"
-        partial_step_line = f"- **Modified Step Subsets:** {'; '.join(partial_steps[:2])}.\n" if partial_steps else ""
+                parts.append(f"+{len(added_cols)} added ({add_preview}{add_more})")
+            delta_note = f"Column selection change: {'; '.join(parts)} ({len(selected_cols)}/100 active)."
 
         if user_message.strip():
             upper_msg = user_message.upper()
@@ -551,28 +560,17 @@ class ProcessHypothesisMultiAgentApp:
 
             wants_interaction = any(k in upper_msg for k in ("INTERACT", "×", " X ", "COMBIN", "SYNERGY", "TOGETHER")) or len(detected_cats) >= 2
 
+            # Reorder candidate cards to match the engineer's intent
             if wants_interaction:
                 int_cards = [c for c in candidates if c["hypothesis_type"] == "two_way_interaction"]
                 other_cards = [c for c in candidates if c["hypothesis_type"] != "two_way_interaction"]
                 if int_cards:
                     candidates = int_cards + other_cards
-                top_int = candidates[0]
-                chat_reply = (
-                    f"**Interaction Scan ({len(selected_cols)}/100 Active Columns • {ds_meta['short_name']}):**\n\n"
-                    f"{ds_line}"
-                    f"{delta_line}"
-                    f"{partial_step_line}"
-                    f"- **Top Active Interaction:** `{top_int.get('short_title', top_int['title'])}` — **{top_int.get('confidence_hero', '99.9%')}** certainty, **{top_int.get('ceteris_paribus_hero', '')}**.\n"
-                    f"- **Active Step Breakdown:** {', '.join(step_pills[:3])}.\n"
-                )
             elif detected_step:
                 step_info = next((s for s in step_attr if s["step"] == detected_step), step_attr[0])
                 existing_step = next((c for c in candidates if c["hypothesis_id"] == f"HYP_STEP_{detected_step}"), None)
                 sel_cnt = step_info["selected_col_count"]
                 tot_cnt = step_info["total_col_count"]
-                desel_list = step_info["deselected_cols"]
-                top_step_knobs = ", ".join(f"`{k}`" for k in step_info["top_parameters"][:2]) or "None (0 cols selected)"
-
                 if existing_step:
                     candidates = [existing_step] + [c for c in candidates if c["hypothesis_id"] != existing_step["hypothesis_id"]]
                 else:
@@ -602,71 +600,111 @@ class ProcessHypothesisMultiAgentApp:
                         "caveats_and_confounders": candidates[0].get("caveats_and_confounders", []),
                     }
                     candidates = [step_hyp] + [c for c in candidates if c["hypothesis_id"] != step_hyp["hypothesis_id"]]
-
-                desel_msg = (
-                    f" (**{len(desel_list)} deselected**: {', '.join(f'`{c}`' for c in desel_list[:3])}{'...' if len(desel_list) > 3 else ''})"
-                    if desel_list
-                    else " (all 20 columns active)"
-                )
-                chat_reply = (
-                    f"**Stage Analysis for `{detected_step}` ({sel_cnt}/{tot_cnt} Columns Active • {ds_meta['short_name']}):**\n\n"
-                    f"{ds_line}"
-                    f"{delta_line}"
-                    f"- **Active Subset Scope:** `{detected_step}` has **{sel_cnt}/{tot_cnt}** columns selected{desel_msg}.\n"
-                    f"- **Variance Share Impact:** Accounts for **{step_info['variance_share_pct']}%** of yield variance in your active subset (compared to **{step_info['full_baseline_share_pct']}%** when all 20 `{detected_step}` columns are selected).\n"
-                    f"- **Top Active Knobs in `{detected_step}`:** {top_step_knobs} — placed at **Card #1** below."
-                )
             elif detected_cats:
                 cat = detected_cats[0]
                 matching_cat = [c for c in candidates if any(cat in p for p in c["parameters"])]
                 other_cat = [c for c in candidates if not any(cat in p for p in c["parameters"])]
                 if matching_cat:
                     candidates = matching_cat + other_cat
-                top_c = candidates[0]
-                active_cat_count = sum(1 for c in selected_cols if cat in c)
-                chat_reply = (
-                    f"**Category Scan for `{cat}` ({active_cat_count}/20 `{cat}` Columns Active • {ds_meta['short_name']}):**\n\n"
-                    f"{ds_line}"
-                    f"{delta_line}"
-                    f"{partial_step_line}"
-                    f"- **#1 Active `{cat}` Signal:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
-                    f"- **Rule of Thumb:** {top_c.get('everyday_analogy', '')}"
-                )
-            else:
-                top_c = candidates[0]
-                chat_reply = (
-                    f"**Subset Analysis ({len(selected_cols)}/100 Active Columns • {ds_meta['short_name']}):**\n\n"
-                    f"{ds_line}"
-                    f"{delta_line}"
-                    f"{partial_step_line}"
-                    f"- **#1 Active Driver:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
-                    f"- **Active Step Breakdown:** {', '.join(step_pills[:3])}."
-                )
 
+            # Build grounded statistical facts for the LLM or conversational responder
+            top_cards_summary = "\n".join(
+                f"  {i}. {c.get('short_title', c['title'])} | Certainty: {c.get('confidence_hero', '')} | "
+                f"Ceteris Paribus: {c.get('ceteris_paribus_hero', '')} | Analogy: {c.get('everyday_analogy', '')}"
+                for i, c in enumerate(candidates[:4], start=1)
+            )
+            steps_summary = ", ".join(
+                f"{s['step']}: {s['selected_col_count']}/{s['total_col_count']} cols ({s['variance_share_pct']}% var vs {s['full_baseline_share_pct']}% full)"
+                for s in step_attr
+            )
+
+            llm_text = None
+            backing_engine = "ADK Subset Partial-OLS Agent Engine"
             if use_llm:
                 llm_prompt = (
-                    "You are a concise semiconductor process engineering assistant. "
-                    "Using ONLY the obfuscated step/parameter names below (never invent raw step names), "
-                    "write 2 ultra-concise bullet points (<40 words total) answering the engineer's question "
-                    "and explicitly noting how their active column selection affects the numbers.\n"
-                    f"Engineer Question: {user_message.strip()}\n"
-                    f"Grounded Subset Facts:\n{chat_reply}"
+                    "You are a senior semiconductor yield & process integration engineer speaking directly to a colleague.\n"
+                    "Answer the engineer's question naturally and directly in 2-4 sentences (or a short, natural markdown response) "
+                    "without using any rigid template headers like 'Subset Analysis:' or '- Active Dataset:'.\n"
+                    "Rules:\n"
+                    "1. Use ONLY obfuscated step/parameter names (`STEP_A`..`STEP_E`, `STEP_A_TEMPERATURE_01`, etc.). Never mention raw confidential step names.\n"
+                    "2. Cite exact numbers from the Grounded Telemetry below (statistical certainty %, ceteris paribus effect, active column count, and wafer count).\n"
+                    "3. If columns were deselected or modified in any step, explicitly explain how that changed the variance share or ceteris paribus slope.\n\n"
+                    f"Engineer Question: {user_message.strip()}\n\n"
+                    f"Grounded Telemetry:\n"
+                    f"- Dataset: {ds_meta['short_name']} ({num_wafers:,} wafers × {len(selected_cols)}/100 active columns = {total_cells_scanned:,} cells scanned in {compute_time_ms} ms)\n"
+                    f"- {delta_note or 'All currently selected columns scanned.'}\n"
+                    f"- Partial/Deselected Steps: {'; '.join(partial_steps) if partial_steps else 'None (full step sets)'}\n"
+                    f"- Step Attribution: {steps_summary}\n"
+                    f"- Top Candidate Hypotheses:\n{top_cards_summary}"
                 )
                 llm_text, backing_engine = _invoke_live_llm_agent(llm_prompt, enable_live_llm=True)
-                if llm_text:
-                    chat_reply = chat_reply + f"\n- **Gemini Agent Insight:** {llm_text}"
+
+            if llm_text:
+                chat_reply = (
+                    f"{llm_text}\n\n"
+                    f"*Grounded on `{ds_meta['short_name']}` ({num_wafers:,} wafers × {len(selected_cols)}/100 active cols • {compute_time_ms} ms scan)*"
+                )
             else:
-                backing_engine = "ADK Subset Partial-OLS Agent Engine"
+                # Conversational, query-specific response (no repetitive 4-bullet boilerplate)
+                top_c = candidates[0]
+                runner_up = candidates[1] if len(candidates) > 1 else top_c
+                if wants_interaction:
+                    chat_reply = (
+                        f"Looking for two-way parameter interactions across `{ds_meta['short_name']}` (**{num_wafers:,} wafers**, **{len(selected_cols)}/100** active columns), "
+                        f"the strongest synergy is **`{top_c.get('short_title', top_c['title'])}`** at **{top_c.get('confidence_hero', '99.9%')}** statistical certainty "
+                        f"(**{top_c.get('ceteris_paribus_hero', '')}**, ceteris paribus).\n\n"
+                        f"- **Why it matters:** {top_c.get('everyday_analogy', '')}\n"
+                        f"- **Confounder check:** {(top_c.get('caveats_and_confounders') or ['None'])[0]}"
+                    )
+                elif detected_step:
+                    step_info = next((s for s in step_attr if s["step"] == detected_step), step_attr[0])
+                    sel_cnt = step_info["selected_col_count"]
+                    tot_cnt = step_info["total_col_count"]
+                    desel_list = step_info["deselected_cols"]
+                    top_step_knobs = ", ".join(f"`{k}`" for k in step_info["top_parameters"][:2]) or "none (0 columns selected)"
+                    if sel_cnt < tot_cnt:
+                        desel_str = ", ".join(f"`{c}`" for c in desel_list[:3]) + (f" (+{len(desel_list)-3} more)" if len(desel_list) > 3 else "")
+                        chat_reply = (
+                            f"In `{detected_step}` on `{ds_meta['short_name']}` (**{num_wafers:,} wafers**), you currently have **{sel_cnt}/{tot_cnt}** columns selected "
+                            f"(deselected: {desel_str}). With this subset, `{detected_step}` accounts for **{step_info['variance_share_pct']}%** of active yield variance "
+                            f"(compared to **{step_info['full_baseline_share_pct']}%** when all 20 `{detected_step}` columns are included).\n\n"
+                            f"The strongest remaining active levers in `{detected_step}` are {top_step_knobs} (promoted to **Card #1** below with **{candidates[0].get('ceteris_paribus_hero', '')}**)."
+                        )
+                    else:
+                        chat_reply = (
+                            f"Across all **{tot_cnt}/{tot_cnt}** active columns of `{detected_step}` on `{ds_meta['short_name']}` (**{num_wafers:,} wafers**), "
+                            f"`{detected_step}` explains **{step_info['variance_share_pct']}%** of total yield variance. "
+                            f"Its primary drivers are {top_step_knobs}, with a combined stage effect of **{candidates[0].get('ceteris_paribus_hero', '')}** "
+                            f"at **{candidates[0].get('confidence_hero', '')}** certainty."
+                        )
+                elif detected_cats:
+                    cat = detected_cats[0]
+                    active_cat_count = sum(1 for c in selected_cols if cat in c)
+                    chat_reply = (
+                        f"Scanning the **{active_cat_count}** active `{cat}` sensors in `{ds_meta['short_name']}` (**{num_wafers:,} wafers**), "
+                        f"the dominant `{cat}` lever is **`{top_c.get('short_title', top_c['title'])}`** (**{top_c.get('confidence_hero', '')}** certainty, "
+                        f"**{top_c.get('ceteris_paribus_hero', '')}** holding other active parameters constant).\n\n"
+                        f"- **Physical intuition:** {top_c.get('everyday_analogy', '')}"
+                    )
+                else:
+                    delta_sentence = f" After updating your selection ({delta_note})," if delta_note else ""
+                    partial_sentence = f" Note that {partial_steps[0]}." if partial_steps else ""
+                    chat_reply = (
+                        f"On `{ds_meta['short_name']}` (**{num_wafers:,} wafers**, **{len(selected_cols)}/100** active columns scanned in **{compute_time_ms} ms**),{delta_sentence} "
+                        f"the #1 root-cause driver is **`{top_c.get('short_title', top_c['title'])}`** with **{top_c.get('confidence_hero', '')}** certainty and a "
+                        f"ceteris paribus impact of **{top_c.get('ceteris_paribus_hero', '')}**, followed by **`{runner_up.get('short_title', runner_up['title'])}`** "
+                        f"(**{runner_up.get('ceteris_paribus_hero', '')}**).{partial_sentence}"
+                    )
         else:
             top_c = candidates[0]
             backing_engine = "ADK Subset Partial-OLS Agent Engine"
+            partial_note = f"\n- **Modified Step Subsets:** {'; '.join(partial_steps[:2])}." if partial_steps else ""
+            delta_bullet = f"\n- **Selection Delta:** {delta_note}" if delta_note else ""
             chat_reply = (
-                f"**Active Subset Scan ({len(selected_cols)}/100 Parameters × 100 Wafers • {ds_meta['short_name']}):**\n\n"
-                f"{ds_line}"
-                f"{delta_line}"
-                f"{partial_step_line}"
-                f"- **#1 Active Signal:** `{top_c.get('short_title', top_c['title'])}` — **{top_c.get('confidence_hero', '99.9%')}** certainty, **{top_c.get('ceteris_paribus_hero', '')}**.\n"
-                f"- **Active Step Breakdown:** {', '.join(step_pills)}.\n"
+                f"**Auto-Scan Complete (`{ds_meta['short_name']}` • {num_wafers:,} Wafers × {len(selected_cols)}/100 Active Cols = {total_cells_scanned:,} Cells in {compute_time_ms} ms):**\n"
+                f"- **#1 Root-Cause Signal:** `{top_c.get('short_title', top_c['title'])}` — **{top_c.get('confidence_hero', '99.9%')}** certainty, **{top_c.get('ceteris_paribus_hero', '')}**."
+                f"{delta_bullet}{partial_note}\n"
+                f"- **Stage Attribution:** {', '.join(step_pills)}."
             )
 
         payload = {
@@ -676,6 +714,9 @@ class ProcessHypothesisMultiAgentApp:
             "dataset_id": active_ds,
             "dataset_name": ds_meta["name"],
             "dataset_short_name": ds_meta["short_name"],
+            "num_wafers": num_wafers,
+            "total_cells_scanned": total_cells_scanned,
+            "compute_time_ms": compute_time_ms,
             "active_columns_count": len(selected_cols),
             "added_columns_count": len(added_cols),
             "removed_columns_count": len(removed_cols),

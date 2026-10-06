@@ -404,7 +404,7 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             # 3. POST /api/chat_generate
             req_gen = urllib.request.Request(
                 f"{base_url}/api/chat_generate",
-                data=json.dumps({"message": "Check UNDERFILL_LAMINATION and interactions", "session_id": "http_test"}).encode("utf-8"),
+                data=json.dumps({"message": "Check UNDERFILL_LAMINATION and interactions", "use_llm": False, "session_id": "http_test"}).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
@@ -486,14 +486,14 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             self.assertIn("%", cand["confidence_hero"])
             self.assertIn("/", cand["ceteris_paribus_hero"])
 
-    def test_09_clear_queue_three_datasets_and_multi_model_feature_selection(self) -> None:
-        """Verify Clear Queue, switching across 3 datasets (lot_alpha, lot_beta, lot_gamma), and 5-Model Feature Selection."""
+    def test_09_clear_queue_four_datasets_and_multi_model_feature_selection(self) -> None:
+        """Verify Clear Queue, switching across datasets (lot_alpha, lot_beta, lot_gamma), and 5-Model Feature Selection."""
         app = ProcessHypothesisMultiAgentApp(
             db_path=self.base_path / "screen3_test.db",
             data_dir=self.data_dir,
         )
 
-        # 1. Verify all 3 datasets are available and produce distinct dominant stages & top drivers
+        # 1. Verify all 4 datasets are registered and the 3 standard lots produce distinct dominant stages & top drivers
         expected_by_dataset = {
             "lot_alpha": ("STEP_A_TEMPERATURE_01", "STEP_A"),
             "lot_beta": ("STEP_B_RF_POWER_01", "STEP_B"),
@@ -502,7 +502,7 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
         for ds_id, (expected_top_col, expected_top_step) in expected_by_dataset.items():
             pre = app.preprocess_dataset(batches=["ALL"], dataset_id=ds_id, session_id=f"sess_{ds_id}")
             self.assertEqual(pre["dataset_id"], ds_id)
-            self.assertEqual(len(pre["available_datasets"]), 3)
+            self.assertEqual(len(pre["available_datasets"]), 4)
 
             gen = app.run_hypothesis_generator_agent(
                 user_message="",
@@ -545,6 +545,52 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             self.assertEqual(clr["status"], "cleared")
             self.assertEqual(clr["cleared_count"], 2)
             self.assertEqual(len(clr["hypothesis_queue"]), 0)
+
+    def test_10_50k_wafer_limit_test_dataset(self) -> None:
+        """Verify 4th dataset `lot_delta_50k` (50,000 wafers x 100 columns = 5,000,000 cells) pagination, discovery, and 5-ML feature selection."""
+        from skills.data_preprocess.scripts.preprocess import DATA_DIR as REPO_DATA_DIR
+        app = ProcessHypothesisMultiAgentApp(
+            db_path=self.base_path / "limit_50k_test.db",
+            data_dir=REPO_DATA_DIR,
+        )
+        # 1. Verify windowed pagination on 50,000 rows
+        pre_p1 = app.preprocess_dataset(
+            batches=["ALL"],
+            dataset_id="lot_delta_50k",
+            row_offset=0,
+            row_limit=250,
+            session_id="sess_50k",
+        )
+        self.assertEqual(pre_p1["dataset_id"], "lot_delta_50k")
+        self.assertEqual(pre_p1["num_wafers"], 50000)
+        self.assertEqual(pre_p1["total_parameter_cells"], 5000000)
+        self.assertTrue(pre_p1["is_paginated"])
+        self.assertEqual(pre_p1["displayed_rows_count"], 250)
+        self.assertEqual(pre_p1["full_rows"][0]["wafer_id"], "WAFER_00001")
+
+        # 2. Verify discovery across 50,000 wafers identifies STEP_D_PRESSURE_01 & STEP_D
+        gen_50k = app.run_hypothesis_generator_agent(
+            user_message="",
+            dataset_id="lot_delta_50k",
+            session_id="sess_50k",
+        )
+        self.assertEqual(gen_50k["num_wafers"], 50000)
+        self.assertEqual(gen_50k["total_cells_scanned"], 5000000)
+        self.assertIn("STEP_D_PRESSURE_01", gen_50k["candidate_hypotheses"][0]["parameters"])
+        self.assertEqual(gen_50k["step_attribution"][0]["step"], "STEP_D")
+
+        # 3. Verify 5-Model Feature Selection on 50,000 wafers
+        fs_50k = app.run_multi_model_feature_selection_agent(
+            top_k_cutoff=5,
+            dataset_id="lot_delta_50k",
+            session_id="sess_50k",
+        )
+        fs_data = fs_50k["feature_selection"]
+        self.assertEqual(fs_data["total_wafers_analyzed"], 50000)
+        self.assertEqual(fs_data["total_cells_analyzed"], 5000000)
+        self.assertGreater(fs_data["total_compute_ms"], 50.0)
+        self.assertEqual(fs_data["global_top_features"][0]["column"], "STEP_D_PRESSURE_01")
+        self.assertEqual(fs_data["global_top_features"][0]["models_in_top_k"], 5)
 
 
 if __name__ == "__main__":

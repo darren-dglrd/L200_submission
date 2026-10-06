@@ -62,14 +62,15 @@ CONFIDENTIAL_RECIPES = [
     "RECIPE-7712-TC-INTERNAL",
 ]
 
-# Catalog of 3 Selectable Semiconductor Process Datasets
+# Catalog of 4 Selectable Semiconductor Process Datasets (3 x 100-Wafer Lots + 1 x 50,000-Wafer Stress Test Lot)
 DATASET_CATALOG: Dict[str, Dict[str, Any]] = {
     "lot_alpha": {
         "dataset_id": "lot_alpha",
         "name": "Dataset 1: Lot Alpha — Underfill Thermal & Pressure Drift",
-        "short_name": "1. Lot Alpha (STEP_A Thermal)",
-        "description": "100 wafers × 100 params. Primary excursion in STEP_A temperature & temp×pressure coupling.",
+        "short_name": "1. Lot Alpha (STEP_A Thermal • 100 Wafers)",
+        "description": "100 wafers × 100 params (10,000 cells). Primary excursion in STEP_A temperature & temp×pressure coupling.",
         "seed": 42,
+        "num_wafers": 100,
         "raw_filename": "raw_wafers.csv",
         "obf_filename": "obfuscated_wafers.csv",
         "primary_stage": "STEP_A",
@@ -77,9 +78,10 @@ DATASET_CATALOG: Dict[str, Dict[str, Any]] = {
     "lot_beta": {
         "dataset_id": "lot_beta",
         "name": "Dataset 2: Lot Beta — Plasma Etch RF Power & Flow Instability",
-        "short_name": "2. Lot Beta (STEP_B Plasma RF)",
-        "description": "100 wafers × 100 params. Primary excursion in STEP_B RF power arcing & gas flow×pressure.",
+        "short_name": "2. Lot Beta (STEP_B Plasma RF • 100 Wafers)",
+        "description": "100 wafers × 100 params (10,000 cells). Primary excursion in STEP_B RF power arcing & gas flow×pressure.",
         "seed": 108,
+        "num_wafers": 100,
         "raw_filename": "raw_wafers_lot_beta.csv",
         "obf_filename": "obfuscated_wafers_lot_beta.csv",
         "primary_stage": "STEP_B",
@@ -87,21 +89,35 @@ DATASET_CATALOG: Dict[str, Dict[str, Any]] = {
     "lot_gamma": {
         "dataset_id": "lot_gamma",
         "name": "Dataset 3: Lot Gamma — Thermal Cure Dwell & Sputter Pressure",
-        "short_name": "3. Lot Gamma (STEP_C Dwell Time)",
-        "description": "100 wafers × 100 params. Primary excursion in STEP_C dwell duration & thermal cure budget.",
+        "short_name": "3. Lot Gamma (STEP_C Dwell Time • 100 Wafers)",
+        "description": "100 wafers × 100 params (10,000 cells). Primary excursion in STEP_C dwell duration & thermal cure budget.",
         "seed": 256,
+        "num_wafers": 100,
         "raw_filename": "raw_wafers_lot_gamma.csv",
         "obf_filename": "obfuscated_wafers_lot_gamma.csv",
         "primary_stage": "STEP_C",
+    },
+    "lot_delta_50k": {
+        "dataset_id": "lot_delta_50k",
+        "name": "Dataset 4: Lot Delta — 50,000 Wafers Stress Test (STEP_D Sputter Excursion)",
+        "short_name": "4. Lot Delta — 50,000 Wafers (Limit Test)",
+        "description": "50,000 wafers × 100 params (5,000,000 cells). High-volume limit test with STEP_D pressure & RF×temp excursion.",
+        "seed": 512,
+        "num_wafers": 50000,
+        "raw_filename": "raw_wafers_lot_delta_50k.csv",
+        "obf_filename": "obfuscated_wafers_lot_delta_50k.csv",
+        "primary_stage": "STEP_D",
     },
 }
 
 
 def normalize_dataset_id(dataset_id: Optional[str] = None) -> str:
-    """Validate and normalize dataset_id to one of the 3 supported datasets."""
+    """Validate and normalize dataset_id to one of the 4 supported datasets."""
     if not dataset_id:
         return "lot_alpha"
     key = str(dataset_id).strip().lower()
+    if key in ("50k", "delta", "lot_delta", "lot_delta_50k"):
+        return "lot_delta_50k"
     return key if key in DATASET_CATALOG else "lot_alpha"
 
 
@@ -129,15 +145,30 @@ def generate_wafer_dataset(
     data_dir: Optional[Path] = None,
     dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
-    """Deterministically generate 100 unique wafers x 100 parameters = 10,000 parameter cells.
-
-    Supports 3 distinct fab lot datasets (`lot_alpha`, `lot_beta`, `lot_gamma`), each with
-    distinct ground-truth process yield drivers across different stages and physical sensors.
-    """
+    """Deterministically generate wafer x 100 parameter datasets (including 50,000-wafer Lot Delta)."""
     ds_key = normalize_dataset_id(dataset_id)
     ds_meta = DATASET_CATALOG[ds_key]
     target_dir = data_dir or DATA_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    if ds_key == "lot_delta_50k":
+        from scripts.simulate_50k_dataset import simulate_50k_wafer_dataset
+        n_target = int(ds_meta.get("num_wafers", 50000)) if num_wafers == 100 else num_wafers
+        sim_res = simulate_50k_wafer_dataset(
+            num_wafers=n_target,
+            seed=seed if seed is not None else int(ds_meta["seed"]),
+            data_dir=target_dir,
+        )
+        return {
+            "dataset_id": ds_key,
+            "dataset_name": ds_meta["name"],
+            "raw_csv_path": sim_res["raw_csv_path"],
+            "unpivoted_csv_path": sim_res["obfuscated_csv_path"],
+            "num_wafers": sim_res["num_wafers"],
+            "num_parameters": sim_res["num_parameters"],
+            "total_parameter_cells": sim_res["total_parameter_cells"],
+        }
+
     actual_seed = seed if seed is not None else int(ds_meta["seed"])
     rng = random.Random(actual_seed)
 
@@ -255,48 +286,70 @@ def obfuscate_and_select_batches(
     custom_columns: Optional[List[str]] = None,
     data_dir: Optional[Path] = None,
     dataset_id: str = "lot_alpha",
+    row_offset: int = 0,
+    row_limit: int = 250,
 ) -> Dict[str, Any]:
     """Obfuscate confidential columns, normalize values to [0, 1], and filter by batch or hand-picked columns."""
+    import itertools
     ds_key = normalize_dataset_id(dataset_id)
     ds_meta = DATASET_CATALOG[ds_key]
     target_dir = data_dir or DATA_DIR
     raw_csv_path = target_dir / ds_meta["raw_filename"]
-    if not raw_csv_path.exists():
-        generate_wafer_dataset(data_dir=target_dir, dataset_id=ds_key)
-
-    with raw_csv_path.open("r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        raw_rows = list(reader)
+    obf_csv_path = target_dir / ds_meta["obf_filename"]
 
     raw_cols = get_raw_parameter_names()
     obf_col_map = {raw_col: obfuscate_column_name(raw_col) for raw_col in raw_cols}
     all_obf_cols = [obf_col_map[c] for c in raw_cols]
 
-    # Compute min and max per parameter column for [0, 1] normalization
-    col_Bounds: Dict[str, tuple] = {}
-    for raw_col in raw_cols:
-        vals = [float(r[raw_col]) for r in raw_rows]
-        c_min, c_max = min(vals), max(vals)
-        col_Bounds[raw_col] = (c_min, c_max if c_max > c_min else c_min + 1.0)
+    if ds_key == "lot_delta_50k":
+        if not obf_csv_path.exists() or not raw_csv_path.exists():
+            generate_wafer_dataset(data_dir=target_dir, dataset_id=ds_key)
+        total_wafers = int(ds_meta.get("num_wafers", 50000))
+        safe_offset = max(0, min(total_wafers - 1, int(row_offset or 0)))
+        safe_limit = max(10, min(500, int(row_limit or 250)))
+        obf_rows = []
+        with obf_csv_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in itertools.islice(reader, safe_offset, safe_offset + safe_limit):
+                obf_row: Dict[str, Any] = {"wafer_id": r["wafer_id"], "yield_pct": float(r["yield_pct"])}
+                for obf_col in all_obf_cols:
+                    obf_row[obf_col] = float(r[obf_col])
+                obf_rows.append(obf_row)
+    else:
+        if not raw_csv_path.exists():
+            generate_wafer_dataset(data_dir=target_dir, dataset_id=ds_key)
 
-    obf_rows: List[Dict[str, Any]] = []
-    for r in raw_rows:
-        # Note: RECIPE_ID is deliberately stripped during obfuscation!
-        obf_row: Dict[str, Any] = {"wafer_id": r["wafer_id"]}
+        with raw_csv_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            raw_rows = list(reader)
+
+        # Compute min and max per parameter column for [0, 1] normalization
+        col_Bounds: Dict[str, tuple] = {}
         for raw_col in raw_cols:
-            obf_col = obf_col_map[raw_col]
-            c_min, c_max = col_Bounds[raw_col]
-            norm_val = (float(r[raw_col]) - c_min) / (c_max - c_min)
-            obf_row[obf_col] = round(norm_val, 4)
-        obf_row["yield_pct"] = float(r["yield_pct"])
-        obf_rows.append(obf_row)
+            vals = [float(r[raw_col]) for r in raw_rows]
+            c_min, c_max = min(vals), max(vals)
+            col_Bounds[raw_col] = (c_min, c_max if c_max > c_min else c_min + 1.0)
 
-    obf_csv_path = target_dir / ds_meta["obf_filename"]
-    obf_fieldnames = ["wafer_id"] + all_obf_cols + ["yield_pct"]
-    with obf_csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=obf_fieldnames)
-        writer.writeheader()
-        writer.writerows(obf_rows)
+        obf_rows = []
+        for r in raw_rows:
+            # Note: RECIPE_ID is deliberately stripped during obfuscation!
+            obf_row = {"wafer_id": r["wafer_id"]}
+            for raw_col in raw_cols:
+                obf_col = obf_col_map[raw_col]
+                c_min, c_max = col_Bounds[raw_col]
+                norm_val = (float(r[raw_col]) - c_min) / (c_max - c_min)
+                obf_row[obf_col] = round(norm_val, 4)
+            obf_row["yield_pct"] = float(r["yield_pct"])
+            obf_rows.append(obf_row)
+
+        obf_fieldnames = ["wafer_id"] + all_obf_cols + ["yield_pct"]
+        with obf_csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=obf_fieldnames)
+            writer.writeheader()
+            writer.writerows(obf_rows)
+        total_wafers = len(obf_rows)
+        safe_offset = 0
+        safe_limit = total_wafers
 
     # Column selection logic: either explicit hand-picked custom_columns OR batch tokens
     requested_batches = [b.upper().strip() for b in (batches or ["ALL"]) if b.strip()]
@@ -352,6 +405,7 @@ def obfuscate_and_select_batches(
             "short_name": v["short_name"],
             "description": v["description"],
             "primary_stage": v["primary_stage"],
+            "num_wafers": v.get("num_wafers", 100),
         }
         for k, v in DATASET_CATALOG.items()
     ]
@@ -364,9 +418,15 @@ def obfuscate_and_select_batches(
         "dataset_description": ds_meta["description"],
         "available_datasets": available_datasets,
         "obfuscated_csv_path": str(obf_csv_path),
-        "num_wafers": len(obf_rows),
+        "num_wafers": total_wafers,
+        "total_rows": total_wafers,
         "total_parameters": len(all_obf_cols),
-        "total_parameter_cells": len(obf_rows) * len(all_obf_cols),
+        "total_parameter_cells": total_wafers * len(all_obf_cols),
+        "is_paginated": total_wafers > len(full_rows),
+        "row_offset": safe_offset,
+        "row_limit": safe_limit,
+        "returned_rows_count": len(full_rows),
+        "displayed_rows_count": len(full_rows),
         "all_columns": all_obf_cols,
         "selected_batches": requested_batches,
         "selected_columns_count": len(selected_cols),

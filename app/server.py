@@ -119,10 +119,14 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/preprocess":
             batches = body.get("batches", ["ALL"])
             custom_cols = body.get("custom_columns")
+            row_offset = int(body.get("row_offset", 0))
+            row_limit = int(body.get("row_limit", 250))
             res = GLOBAL_APP.preprocess_dataset(
                 batches=batches,
                 custom_columns=custom_cols,
                 dataset_id=dataset_id,
+                row_offset=row_offset,
+                row_limit=row_limit,
                 session_id=session_id,
             )
             self._send_json(res)
@@ -131,7 +135,8 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/chat_generate":
             msg = body.get("message", "")
             sel_cols = body.get("selected_columns")
-            use_llm = bool(body.get("use_llm", False))
+            # Default to live Gemini LLM when the user submits a natural-language question
+            use_llm = bool(body["use_llm"]) if "use_llm" in body else bool(msg.strip())
             res = GLOBAL_APP.run_hypothesis_generator_agent(
                 user_message=msg,
                 selected_columns=sel_cols,

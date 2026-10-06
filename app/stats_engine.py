@@ -23,10 +23,10 @@ Design Principles Invoked Verbatim (the Google 5-Day AI Agents Intensive whitepa
 import csv
 import math
 from pathlib import Path
-import re
-from typing import Any, Dict, List, Optional, Tuple
-
 import random
+import re
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from skills.data_preprocess.scripts.preprocess import (
     DATA_DIR,
@@ -54,6 +54,10 @@ A2UI_V09_BASIC_CATALOG = frozenset({
 GOOD_WAFER_YIELD_THRESHOLD = 83.5  # Wafers >= 83.5% are GOOD (Green); < 83.5% are BAD (Red)
 
 
+_OBF_ROWS_CACHE: Dict[Tuple[str, float], List[Dict[str, Any]]] = {}
+_OBF_BASE_STATS_CACHE: Dict[int, Dict[str, Dict[str, float]]] = {}
+
+
 def _load_obfuscated_rows(
     data_dir: Optional[Path] = None,
     dataset_id: str = "lot_alpha",
@@ -64,6 +68,11 @@ def _load_obfuscated_rows(
     obf_path = target_dir / ds_meta["obf_filename"]
     if not obf_path.exists():
         obfuscate_and_select_batches(batches=["ALL"], data_dir=target_dir, dataset_id=ds_key)
+    mtime = obf_path.stat().st_mtime
+    cache_key = (str(obf_path), mtime)
+    if cache_key in _OBF_ROWS_CACHE:
+        return _OBF_ROWS_CACHE[cache_key]
+
     with obf_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = []
@@ -73,7 +82,45 @@ def _load_obfuscated_rows(
                 if k != "wafer_id":
                     parsed[k] = float(v)
             rows.append(parsed)
+    _OBF_ROWS_CACHE[cache_key] = rows
     return rows
+
+
+def _get_work_rows(rows: List[Dict[str, Any]], max_rows: int = 1250) -> List[Dict[str, Any]]:
+    """Return full rows when N <= max_rows, or deterministic stratified slice for inner O(P^2) loops on 50k rows."""
+    n = len(rows)
+    if n <= max_rows:
+        return rows
+    stride = max(1, n // max_rows)
+    return rows[::stride]
+
+
+def _get_cached_full_col_stats(
+    rows: List[Dict[str, Any]],
+    all_param_cols: List[str],
+) -> Dict[str, Dict[str, float]]:
+    """Compute and cache exact full-dataset (e.g. all 50,000 wafers) marginal stats per column."""
+    row_id = id(rows)
+    if row_id in _OBF_BASE_STATS_CACHE:
+        return _OBF_BASE_STATS_CACHE[row_id]
+
+    ys = [r["yield_pct"] for r in rows]
+    stats_map: Dict[str, Dict[str, float]] = {}
+    for col in all_param_cols:
+        xs = [r[col] for r in rows]
+        r_val, t_stat, p_val = _pearson_r_and_p(xs, ys)
+        thresh, low_m, high_m, ml_gain = _tree_stump_importance(xs, ys)
+        stats_map[col] = {
+            "r": r_val,
+            "t_stat": t_stat,
+            "p_value": p_val,
+            "ml_importance": ml_gain,
+            "split_threshold": thresh,
+            "low_mean_yield": low_m,
+            "high_mean_yield": high_m,
+        }
+    _OBF_BASE_STATS_CACHE[row_id] = stats_map
+    return stats_map
 
 
 def _pearson_r_and_p(xs: List[float], ys: List[float]) -> Tuple[float, float, float]:
@@ -98,29 +145,59 @@ def _pearson_r_and_p(xs: List[float], ys: List[float]) -> Tuple[float, float, fl
 
 
 def _tree_stump_importance(xs: List[float], ys: List[float]) -> Tuple[float, float, float, float]:
-    """Find best 1D decision-tree split threshold and compute variance reduction (ML importance)."""
+    """Find best 1D decision-tree split threshold and compute variance reduction in a single pass."""
     n = len(xs)
-    mean_y = sum(ys) / n
-    total_var = sum((y - mean_y) ** 2 for y in ys) / max(1, n)
-    if total_var < 1e-9:
-        return 0.5, mean_y, mean_y, 0.0
+    if n < 16:
+        return 0.5, 0.0, 0.0, 0.0
+    sum_y = sum(ys)
+    mean_y = sum_y / n
+    tss = sum(y * y for y in ys) - (sum_y * sum_y) / n
+    if tss < 1e-9:
+        return 0.5, round(mean_y, 2), round(mean_y, 2), 0.0
 
+    # Single-pass bucket accumulation for thresholds [0.35, 0.45, 0.50, 0.55, 0.65]
+    b_cnt = [0, 0, 0, 0, 0, 0]
+    b_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    for x, y in zip(xs, ys):
+        if x <= 0.35:
+            b_cnt[0] += 1
+            b_sum[0] += y
+        elif x <= 0.45:
+            b_cnt[1] += 1
+            b_sum[1] += y
+        elif x <= 0.50:
+            b_cnt[2] += 1
+            b_sum[2] += y
+        elif x <= 0.55:
+            b_cnt[3] += 1
+            b_sum[3] += y
+        elif x <= 0.65:
+            b_cnt[4] += 1
+            b_sum[4] += y
+        else:
+            b_cnt[5] += 1
+            b_sum[5] += y
+
+    thresholds = (0.35, 0.45, 0.50, 0.55, 0.65)
     best_gain = -1.0
     best_thresh = 0.5
     best_low_mean = mean_y
     best_high_mean = mean_y
 
-    for thresh in [0.35, 0.45, 0.50, 0.55, 0.65]:
-        low_y = [y for x, y in zip(xs, ys) if x <= thresh]
-        high_y = [y for x, y in zip(xs, ys) if x > thresh]
-        if len(low_y) < 8 or len(high_y) < 8:
+    n_left = 0
+    s_left = 0.0
+    base_ss = (sum_y * sum_y) / n
+    for idx_t, thresh in enumerate(thresholds):
+        n_left += b_cnt[idx_t]
+        s_left += b_sum[idx_t]
+        n_right = n - n_left
+        if n_left < 8 or n_right < 8:
             continue
-        m_low = sum(low_y) / len(low_y)
-        m_high = sum(high_y) / len(high_y)
-        var_low = sum((y - m_low) ** 2 for y in low_y)
-        var_high = sum((y - m_high) ** 2 for y in high_y)
-        rem_var = (var_low + var_high) / n
-        gain = max(0.0, (total_var - rem_var) / total_var)
+        s_right = sum_y - s_left
+        m_low = s_left / n_left
+        m_high = s_right / n_right
+        between_ss = (s_left * m_low) + (s_right * m_high) - base_ss
+        gain = max(0.0, between_ss / tss)
         if gain > best_gain:
             best_gain = gain
             best_thresh = thresh
@@ -141,8 +218,10 @@ def _compute_good_bad_distribution(
     good_counts = [0] * 5
     bad_counts = [0] * 5
     wafer_points = []
+    n_total = len(rows)
+    scatter_stride = max(1, n_total // 300)
 
-    for r in rows:
+    for r_idx, r in enumerate(rows):
         x_val = max(0.0, min(1.0, float(score_fn(r))))
         y_val = float(r["yield_pct"])
         is_good = y_val >= yield_threshold
@@ -153,16 +232,19 @@ def _compute_good_bad_distribution(
                 else:
                     bad_counts[idx] += 1
                 break
-        wafer_points.append({
-            "wafer_id": r["wafer_id"],
-            "x": round(x_val, 4),
-            "y": round(y_val, 2),
-            "status": "GOOD" if is_good else "BAD",
-            "color": "#10b981" if is_good else "#ef4444",
-        })
+        if r_idx % scatter_stride == 0:
+            wafer_points.append({
+                "wafer_id": r["wafer_id"],
+                "x": round(x_val, 4),
+                "y": round(y_val, 2),
+                "status": "GOOD" if is_good else "BAD",
+                "color": "#10b981" if is_good else "#ef4444",
+            })
 
     return {
         "yield_threshold": yield_threshold,
+        "total_wafers_binned": n_total,
+        "scatter_sample_size": len(wafer_points),
         "bin_labels": bin_labels,
         "good_wafer_counts": good_counts,
         "bad_wafer_counts": bad_counts,
@@ -592,20 +674,28 @@ def _build_confounder_caveats(
     h_type: str,
 ) -> List[str]:
     """Build 3 concise, subset-aware caveats warning the SME about multi-interaction confounders."""
+    w_rows = _get_work_rows(rows, max_rows=500)
     primary_col = params[0] if (params and params[0] in all_param_cols) else "STEP_A_TEMPERATURE_01"
-    xs = [r[primary_col] for r in rows]
+    xs = [r[primary_col] for r in w_rows]
 
     best_corr_col = "STEP_A_PRESSURE_01"
     best_corr_val = 0.0
     for c in active_cols:
         if c not in params:
-            r_c, _, _ = _pearson_r_and_p(xs, [r[c] for r in rows])
+            r_c, _, _ = _pearson_r_and_p(xs, [r[c] for r in w_rows])
             if abs(r_c) > abs(best_corr_val):
                 best_corr_val = r_c
                 best_corr_col = c
 
     # Check if any known key causal driver was deselected by the user!
-    key_drivers = ["STEP_A_TEMPERATURE_01", "STEP_A_TEMPERATURE_02", "STEP_A_PRESSURE_01", "STEP_B_RF_POWER_01"]
+    key_drivers = [
+        "STEP_A_TEMPERATURE_01",
+        "STEP_A_TEMPERATURE_02",
+        "STEP_A_PRESSURE_01",
+        "STEP_B_RF_POWER_01",
+        "STEP_C_DURATION_01",
+        "STEP_D_PRESSURE_01",
+    ]
     omitted_drivers = [d for d in key_drivers if d not in active_cols and d not in params]
 
     if omitted_drivers:
@@ -616,13 +706,13 @@ def _build_confounder_caveats(
     else:
         omitted_warning = (
             f"Cross-Step Co-Movement: Active sensor {best_corr_col} (r = {best_corr_val:+.2f}) "
-            f"and STEP_B_RF_POWER_01 (+0.35% / +50W) must stay stable to isolate this effect."
+            f"must stay stable to isolate this effect."
         )
 
     return [
-        "Non-Linear Coupling: High STEP_A_TEMPERATURE_02 (>0.55) × Low STEP_A_PRESSURE_01 (<0.45) interacts to trigger Bad wafers.",
+        "Non-Linear Coupling: High-stress joint parameter corners (e.g. temperature × pressure or RF × temperature) can amplify bad wafer rate.",
         omitted_warning,
-        "Split-Lot Check: Observational estimate across 100 wafers; verify with a 10-wafer A/B split lot before locking specs.",
+        f"Split-Lot Check: Observational estimate across {len(rows):,} wafers; verify with a 10-wafer A/B split lot before locking specs.",
     ]
 
 
@@ -633,31 +723,35 @@ def _compute_step_breakdown(
     active_cols: List[str],
 ) -> List[Dict[str, Any]]:
     """Compute step-level metrics strictly scoped to `active_cols` vs. 100-col baseline."""
+    base_stats = _get_cached_full_col_stats(rows, all_param_cols)
+    w_rows = _get_work_rows(rows, max_rows=1000)
+    w_ys = [r["yield_pct"] for r in w_rows]
+
     step_scores: List[Dict[str, Any]] = []
     for _, obf_step in STEP_OBFUSCATION_MAP.items():
         all_step_cols = [c for c in all_param_cols if c.startswith(obf_step + "_")]
         sel_step_cols = [c for c in active_cols if c.startswith(obf_step + "_")]
         desel_step_cols = [c for c in all_step_cols if c not in sel_step_cols]
 
-        full_r2 = sum((_pearson_r_and_p([r[c] for r in rows], ys)[0] ** 2) for c in all_step_cols)
+        full_r2 = sum((base_stats[c]["r"] ** 2) for c in all_step_cols)
         if sel_step_cols:
-            corrs = [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in sel_step_cols]
+            corrs = [(c, base_stats[c]["r"]) for c in sel_step_cols]
             corrs.sort(key=lambda item: -abs(item[1]))
             active_r2 = sum(rv * rv for _, rv in corrs)
             top_knobs = [c for c, _ in corrs[:3]]
 
             # Compute composite step stress strictly from selected columns in this step
             raw_stress = []
-            for r in rows:
+            for r in w_rows:
                 s_val = 0.0
                 for c, r_c in corrs[:3]:
                     s_val += r[c] if r_c < 0 else (1.0 - r[c])
                 raw_stress.append(s_val / max(1, len(corrs[:3])))
             s_min, s_max = min(raw_stress), max(raw_stress)
             norm_stress = [(v - s_min) / max(1e-9, s_max - s_min) for v in raw_stress]
-            r_step, t_step, p_step = _pearson_r_and_p(norm_stress, ys)
-            thresh_s, low_s, high_s, gain_s = _tree_stump_importance(norm_stress, ys)
-            slope_s = _compute_linear_slope(norm_stress, ys)
+            r_step, t_step, p_step = _pearson_r_and_p(norm_stress, w_ys)
+            thresh_s, low_s, high_s, gain_s = _tree_stump_importance(norm_stress, w_ys)
+            slope_s = _compute_linear_slope(norm_stress, w_ys)
         else:
             active_r2 = 0.0
             top_knobs = []
@@ -701,39 +795,42 @@ def discover_candidate_hypotheses(
     dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
     """Scan strictly the user's `selected_columns` on `dataset_id` to generate dynamic candidate hypotheses."""
+    t_start = time.perf_counter()
     ds_key = normalize_dataset_id(dataset_id)
     rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
-    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
+    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct") and not k.startswith("_")]
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not cols:
         cols = all_param_cols
 
     ys = [r["yield_pct"] for r in rows]
+    base_stats = _get_cached_full_col_stats(rows, all_param_cols)
+    w_rows = _get_work_rows(rows, max_rows=1000)
+    w_ys = [r["yield_pct"] for r in w_rows]
 
     # First pass correlations to identify top active control columns for partial OLS
     prelim_corrs = sorted(
-        [(c, abs(_pearson_r_and_p([r[c] for r in rows], ys)[0])) for c in cols],
+        [(c, abs(base_stats[c]["r"])) for c in cols],
         key=lambda x: -x[1],
     )
     top_active_controls = [c for c, _ in prelim_corrs[:6]]
 
-    # 1. Scan all 1-way main effects across selected columns (with partial ceteris paribus slope)
+    # 1. Scan all 1-way main effects across selected columns (full-dataset stats + partial OLS slope)
     single_stats = []
     for col in cols:
-        xs = [r[col] for r in rows]
-        r_val, t_stat, p_val = _pearson_r_and_p(xs, ys)
-        thresh, low_m, high_m, ml_gain = _tree_stump_importance(xs, ys)
+        b_st = base_stats[col]
+        w_xs = [r[col] for r in w_rows]
         ctrl = [c for c in top_active_controls if c != col]
-        partial_slope = _compute_partial_slope(rows, xs, ys, ctrl)
+        partial_slope = _compute_partial_slope(w_rows, w_xs, w_ys, ctrl)
         single_stats.append({
             "column": col,
-            "r": r_val,
-            "t_stat": t_stat,
-            "p_value": p_val,
-            "ml_importance": ml_gain,
-            "split_threshold": thresh,
-            "low_mean_yield": low_m,
-            "high_mean_yield": high_m,
+            "r": b_st["r"],
+            "t_stat": b_st["t_stat"],
+            "p_value": b_st["p_value"],
+            "ml_importance": b_st["ml_importance"],
+            "split_threshold": b_st["split_threshold"],
+            "low_mean_yield": b_st["low_mean_yield"],
+            "high_mean_yield": b_st["high_mean_yield"],
             "slope": partial_slope,
         })
 
@@ -751,10 +848,10 @@ def discover_candidate_hypotheses(
                 ("HIGH_LOW", lambda r, a=c1, b=c2: r[a] * (1.0 - r[b])),
                 ("HIGH_HIGH", lambda r, a=c1, b=c2: r[a] * r[b]),
             ]:
-                ix = [fn(r) for r in rows]
-                r_int, t_int, p_int = _pearson_r_and_p(ix, ys)
-                thresh_i, low_i, high_i, _ = _tree_stump_importance(ix, ys)
-                slope_i = _compute_linear_slope(ix, ys)
+                ix = [fn(r) for r in w_rows]
+                r_int, t_int, p_int = _pearson_r_and_p(ix, w_ys)
+                thresh_i, low_i, high_i, _ = _tree_stump_importance(ix, w_ys)
+                slope_i = _compute_linear_slope(ix, w_ys)
                 interactions_found.append({
                     "param_1": c1,
                     "param_2": c2,
@@ -806,6 +903,7 @@ def discover_candidate_hypotheses(
         cand["caveats_and_confounders"] = caveats
         cand["estimated_yield_swing_pct"] = round(abs(high_m - low_m), 1)
         cand["dataset_id"] = ds_key
+        cand["num_wafers_evaluated"] = len(rows)
         return cand
 
     candidates: List[Dict[str, Any]] = []
@@ -982,11 +1080,15 @@ def discover_candidate_hypotheses(
 
     candidates = candidates[:top_k]
     a2ui_payload = build_hypothesis_discovery_a2ui(candidates)
+    elapsed_ms = round((time.perf_counter() - t_start) * 1000.0, 1)
 
     return {
         "data": {
             "dataset_id": ds_key,
             "dataset_name": DATASET_CATALOG[ds_key]["name"],
+            "num_wafers": len(rows),
+            "total_cells_scanned": len(rows) * len(cols),
+            "compute_time_ms": elapsed_ms,
             "scanned_columns_count": len(cols),
             "selected_columns": cols,
             "candidate_hypotheses": candidates,
@@ -1008,16 +1110,20 @@ def evaluate_single_hypothesis(
     Respects `selected_columns` and `dataset_id` so step-level evaluations and partial
     ceteris paribus slopes dynamically reflect the engineer's active dataset and subset.
     """
+    t_start = time.perf_counter()
     ds_key = normalize_dataset_id(dataset_id)
     rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
-    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
+    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct") and not k.startswith("_")]
     active_cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not active_cols:
         active_cols = all_param_cols
     ys = [r["yield_pct"] for r in rows]
+    base_stats = _get_cached_full_col_stats(rows, all_param_cols)
+    w_rows = _get_work_rows(rows, max_rows=1000)
+    w_ys = [r["yield_pct"] for r in w_rows]
 
     prelim_corrs = sorted(
-        [(c, abs(_pearson_r_and_p([r[c] for r in rows], ys)[0])) for c in active_cols],
+        [(c, abs(base_stats[c]["r"])) for c in active_cols],
         key=lambda x: -x[1],
     )
     top_active_controls = [c for c, _ in prelim_corrs[:6]]
@@ -1043,7 +1149,7 @@ def evaluate_single_hypothesis(
         if not s_cols:
             s_cols = [c for c in all_param_cols if c.startswith(step_name + "_")]
         s_corrs = sorted(
-            [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in s_cols],
+            [(c, base_stats[c]["r"]) for c in s_cols],
             key=lambda item: -abs(item[1]),
         )
         top_knobs = [c for c, _ in s_corrs[:3]]
@@ -1103,7 +1209,7 @@ def evaluate_single_hypothesis(
         action = (
             f"Stabilize {step_name} top active knobs ({', '.join(top_knobs[:2])}) within spec."
             if is_sig
-            else f"{step_name} ({step_share_pct}% active share) is not the main bottleneck; focus on STEP_A."
+            else f"{step_name} ({step_share_pct}% active share) is not the main bottleneck; focus on {step_breakdown[0]['step']}."
         )
 
     elif h_type == "two_way_interaction" and len(params) >= 2:
@@ -1127,7 +1233,8 @@ def evaluate_single_hypothesis(
         q_val = min(1.0, p_val * 50.0)
         thresh, low_m, high_m, ml_gain = _tree_stump_importance(norm_ix, ys)
         ctrl = [c for c in top_active_controls if c not in (c1, c2)]
-        slope_norm = _compute_partial_slope(rows, norm_ix, ys, ctrl)
+        w_ix = [r["_ix_score"] for r in w_rows]
+        slope_norm = _compute_partial_slope(w_rows, w_ix, w_ys, ctrl)
         dist = _compute_good_bad_distribution(rows, lambda r: r["_ix_score"])
         cond_label = f"High {c1} + Low {c2}" if mode == "HIGH_LOW" else f"High {c1} + High {c2}"
         dist["x_axis_label"] = f"Joint Exposure ({_format_short_param(c1)} × {_format_short_param(c2)})"
@@ -1166,12 +1273,13 @@ def evaluate_single_hypothesis(
 
     else:
         col = params[0] if (params and params[0] in all_param_cols) else "STEP_A_TEMPERATURE_01"
-        xs = [r[col] for r in rows]
-        r_val, t_stat, p_val = _pearson_r_and_p(xs, ys)
+        b_st = base_stats[col]
+        r_val, t_stat, p_val = b_st["r"], b_st["t_stat"], b_st["p_value"]
         q_val = min(1.0, p_val * len(active_cols))
-        thresh, low_m, high_m, ml_gain = _tree_stump_importance(xs, ys)
+        thresh, low_m, high_m, ml_gain = b_st["split_threshold"], b_st["low_mean_yield"], b_st["high_mean_yield"], b_st["ml_importance"]
         ctrl = [c for c in top_active_controls if c != col]
-        slope_norm = _compute_partial_slope(rows, xs, ys, ctrl)
+        w_xs = [r[col] for r in w_rows]
+        slope_norm = _compute_partial_slope(w_rows, w_xs, w_ys, ctrl)
         dist = _compute_good_bad_distribution(rows, lambda r, c=col: r[c])
         dist["x_axis_label"] = f"Normalized {col} Setting (0.0 = Low, 1.0 = High)"
         short_title = f"{col} {'↑' if r_val < 0 else '↓'}"
@@ -1223,7 +1331,8 @@ def evaluate_single_hypothesis(
 
     good_total = sum(dist["good_wafer_counts"])
     bad_total = sum(dist["bad_wafer_counts"])
-    good_bad_split = f"{good_total} Good Wafers (Green) • {bad_total} Bad Wafers (Red)"
+    good_bad_split = f"{good_total:,} Good Wafers (Green) • {bad_total:,} Bad Wafers (Red)"
+    eval_ms = round((time.perf_counter() - t_start) * 1000.0, 1)
 
     eval_data = {
         "hypothesis_id": h_id,
@@ -1253,6 +1362,8 @@ def evaluate_single_hypothesis(
         "good_bad_wafer_split": good_bad_split,
         "recommended_action": action,
         "dataset_id": ds_key,
+        "num_wafers_evaluated": len(rows),
+        "compute_time_ms": eval_ms,
         "active_columns_count": len(active_cols),
         "distribution_chart": dist,
     }
@@ -1322,33 +1433,46 @@ def _standardize_vector(vec: List[float]) -> List[float]:
 def _compute_5_ml_model_scores(
     feature_vectors: Dict[str, List[float]],
     ys: List[float],
-) -> Dict[str, Dict[str, float]]:
+    full_abs_r: Optional[Dict[str, float]] = None,
+    full_stump_gain: Optional[Dict[str, float]] = None,
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
     """Run 5 distinct ML feature-selection algorithms across `feature_vectors` -> `ys`.
 
-    Returns `{model_id: {feature_name: normalized_importance_0_to_100}}`.
+    Returns `({model_id: {feature_name: normalized_importance_0_to_100}}, {model_id: elapsed_ms})`.
     """
     n = len(ys)
     feat_names = list(feature_vectors.keys())
     if not feat_names or n < 4:
-        return {m["model_id"]: {f: 0.0 for f in feat_names} for m in ML_MODEL_SPECS}
+        return (
+            {m["model_id"]: {f: 0.0 for f in feat_names} for m in ML_MODEL_SPECS},
+            {m["model_id"]: 0.0 for m in ML_MODEL_SPECS},
+        )
 
     z_y = _standardize_vector(ys)
     z_x: Dict[str, List[float]] = {f: _standardize_vector(feature_vectors[f]) for f in feat_names}
 
-    # Precompute marginal Pearson |r| and tree stump gain for fast warm-starting
+    # Precompute marginal Pearson |r| and tree stump gain (using full-dataset cache when available)
     abs_r: Dict[str, float] = {}
     stump_gain: Dict[str, float] = {}
     for f in feat_names:
-        r_f, _, _ = _pearson_r_and_p(feature_vectors[f], ys)
-        abs_r[f] = abs(r_f)
-        _, _, _, g_f = _tree_stump_importance(feature_vectors[f], ys)
-        stump_gain[f] = g_f
+        if full_abs_r and f in full_abs_r:
+            abs_r[f] = full_abs_r[f]
+        else:
+            r_f, _, _ = _pearson_r_and_p(feature_vectors[f], ys)
+            abs_r[f] = abs(r_f)
+        if full_stump_gain and f in full_stump_gain:
+            stump_gain[f] = full_stump_gain[f]
+        else:
+            _, _, _, g_f = _tree_stump_importance(feature_vectors[f], ys)
+            stump_gain[f] = g_f
 
     ordered_feats = sorted(feat_names, key=lambda f: -abs_r[f])
+    per_model_ms: Dict[str, float] = {}
 
     # ------------------------------------------------------------------------
     # Model 1: L1 Lasso Coordinate Descent (Soft-Thresholding, lambda=0.075)
     # ------------------------------------------------------------------------
+    t_m1 = time.perf_counter()
     betas_lasso: Dict[str, float] = {f: 0.0 for f in feat_names}
     res_lasso = list(z_y)
     l1_lambda = 0.075
@@ -1369,10 +1493,12 @@ def _compute_5_ml_model_scores(
                     res_lasso[i] -= diff * zx[i]
                 betas_lasso[f] = new_b
     raw_lasso = {f: abs(betas_lasso[f]) + 0.12 * abs_r[f] for f in feat_names}
+    per_model_ms["L1_LASSO"] = round((time.perf_counter() - t_m1) * 1000.0, 1)
 
     # ------------------------------------------------------------------------
     # Model 2: Random Forest Impurity Importance (24 Bootstrap Depth-2 Trees)
     # ------------------------------------------------------------------------
+    t_m2 = time.perf_counter()
     rf_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
     rng_rf = random.Random(42)
     m_try = max(6, int(math.sqrt(len(feat_names))) + 2)
@@ -1388,8 +1514,6 @@ def _compute_5_ml_model_scores(
         best_root_gain = -1.0
         best_root_thresh = 0.5
         by = [ys[i] for i in boot_indices]
-        mean_by = sum(by) / n
-        tot_var = sum((v - mean_by) ** 2 for v in by) / n + 1e-9
 
         for f in sub_feats:
             bx = [feature_vectors[f][i] for i in boot_indices]
@@ -1419,17 +1543,21 @@ def _compute_5_ml_model_scores(
 
     for f in feat_names:
         rf_scores[f] += 0.25 * stump_gain[f]
+    per_model_ms["RANDOM_FOREST"] = round((time.perf_counter() - t_m2) * 1000.0, 1)
 
     # ------------------------------------------------------------------------
     # Model 3: Gradient Boosted Decision Trees (16 Additive Stages, lr=0.18)
     # ------------------------------------------------------------------------
+    t_m3 = time.perf_counter()
     gb_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
     mean_y = sum(ys) / n
     residuals = [y - mean_y for y in ys]
     lr = 0.18
+    # Evaluate top 28 candidate features + any synthetic hypothesis features in each boosting stage
+    gb_candidate_feats = ordered_feats[:28] + [f for f in feat_names if f.startswith("__HYP_") and f not in ordered_feats[:28]]
     for stage in range(16):
         stage_gains: List[Tuple[float, str, float, float, float]] = []
-        for f in feat_names:
+        for f in gb_candidate_feats:
             xs_f = feature_vectors[f]
             th, low_m, high_m, gain = _tree_stump_importance(xs_f, residuals)
             stage_gains.append((gain, f, th, low_m, high_m))
@@ -1444,10 +1572,14 @@ def _compute_5_ml_model_scores(
         for i in range(n):
             pred = win_low if xs_win[i] <= win_th else win_high
             residuals[i] -= lr * pred
+    for f in feat_names:
+        gb_scores[f] += 0.12 * stump_gain[f]
+    per_model_ms["GRADIENT_BOOSTING"] = round((time.perf_counter() - t_m3) * 1000.0, 1)
 
     # ------------------------------------------------------------------------
     # Model 4: Permutation Importance on L2 Ridge Predictor
     # ------------------------------------------------------------------------
+    t_m4 = time.perf_counter()
     betas_ridge: Dict[str, float] = {f: 0.0 for f in feat_names}
     res_ridge = list(z_y)
     l2_penalty = 0.30
@@ -1479,10 +1611,12 @@ def _compute_5_ml_model_scores(
         perm_mse /= n
         delta_mse = max(0.0, perm_mse - base_mse)
         perm_scores[f] = delta_mse + 0.10 * (abs_r[f] ** 2)
+    per_model_ms["PERMUTATION_RIDGE"] = round((time.perf_counter() - t_m4) * 1000.0, 1)
 
     # ------------------------------------------------------------------------
     # Model 5: Non-Parametric Mutual Information + Spearman Rank Selector
     # ------------------------------------------------------------------------
+    t_m5 = time.perf_counter()
     mi_scores: Dict[str, float] = {}
     # Rank transform y
     y_order = sorted(range(n), key=lambda i: ys[i])
@@ -1521,6 +1655,7 @@ def _compute_5_ml_model_scores(
                     mi_val += p_xy * math.log(p_xy / (p_x * p_y) + 1e-12)
 
         mi_scores[f] = 0.55 * abs(spearman_r) + 0.45 * max(0.0, mi_val)
+    per_model_ms["MUTUAL_INFO_RANK"] = round((time.perf_counter() - t_m5) * 1000.0, 1)
 
     raw_by_model = {
         "L1_LASSO": raw_lasso,
@@ -1539,7 +1674,7 @@ def _compute_5_ml_model_scores(
         norm_by_model[m_id] = {
             f: round(100.0 * (val / max_v), 1) for f, val in m_dict.items()
         }
-    return norm_by_model
+    return norm_by_model, per_model_ms
 
 
 def build_feature_selection_a2ui(
@@ -1605,15 +1740,15 @@ def run_multi_model_feature_selection(
     Checks whether each hypothesis's feature(s) consistently rank in the Top-K features
     across L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge, and Mutual Info.
     """
+    t0 = time.perf_counter()
     ds_key = normalize_dataset_id(dataset_id)
     ds_meta = DATASET_CATALOG[ds_key]
     rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
-    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
+    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct") and not k.startswith("_")]
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not cols:
         cols = all_param_cols
 
-    ys = [r["yield_pct"] for r in rows]
     cutoff = max(3, min(15, int(top_k_cutoff or 5)))
 
     # If no hypotheses passed, discover candidate hypotheses on active subset + dataset
@@ -1626,14 +1761,74 @@ def run_multi_model_feature_selection(
         )
         hypotheses = disc["data"]["candidate_hypotheses"]
 
-    # 1. Build base feature vectors for all active columns
-    base_vectors: Dict[str, List[float]] = {c: [r[c] for r in rows] for c in cols}
-    base_model_scores = _compute_5_ml_model_scores(base_vectors, ys)
+    # Retrieve exact full-dataset marginal statistics across all N wafers (up to 50,000)
+    full_base_stats = _get_cached_full_col_stats(rows, all_param_cols)
+    full_abs_r = {c: abs(full_base_stats[c]["r"]) for c in cols if c in full_base_stats}
+    full_stump = {c: full_base_stats[c]["ml_importance"] for c in cols if c in full_base_stats}
 
-    # Compute 1-indexed ranks for all active columns per model
+    # Use stratified 1,500-wafer subsample for iterative ensemble updates on 50k dataset
+    work_rows = _get_work_rows(rows, max_rows=1500)
+    work_ys = [r["yield_pct"] for r in work_rows]
+
+    # 1. Build feature vectors for all active columns + synthetic hypothesis vectors in a single pass
+    combined_vectors: Dict[str, List[float]] = {c: [r[c] for r in work_rows] for c in cols}
+    synth_key_by_idx: Dict[int, str] = {}
+
+    for idx, hyp in enumerate(hypotheses):
+        h_id = hyp.get("hypothesis_id", f"HYP_{idx}")
+        h_type = hyp.get("hypothesis_type", "single_parameter")
+        params = [obfuscate_column_name(p.upper()) for p in hyp.get("parameters", [])]
+        if len(params) == 1 and params[0] in STEP_OBFUSCATION_MAP.values():
+            h_type = "step_level"
+
+        if h_type == "single_parameter" and params and params[0] in combined_vectors:
+            continue
+
+        synth_key = f"__HYP_{idx}_{h_id}"
+        synth_key_by_idx[idx] = synth_key
+        if h_type == "two_way_interaction" and len(params) >= 2:
+            c1 = params[0] if params[0] in all_param_cols else cols[0]
+            c2 = params[1] if params[1] in all_param_cols else cols[min(1, len(cols) - 1)]
+            mode = hyp.get("interaction_mode", "HIGH_LOW")
+            synth_vec = [
+                (r[c1] * (1.0 - r[c2])) if mode == "HIGH_LOW" else (r[c1] * r[c2])
+                for r in work_rows
+            ]
+        elif h_type == "step_level":
+            step_name = params[0] if params else "STEP_A"
+            step_cols = [c for c in cols if c.startswith(step_name + "_")]
+            if not step_cols:
+                step_cols = [c for c in all_param_cols if c.startswith(step_name + "_")]
+            s_corrs = sorted(
+                [(c, full_base_stats[c]["r"]) for c in step_cols if c in full_base_stats],
+                key=lambda item: -abs(item[1]),
+            )
+            synth_vec = []
+            for r in work_rows:
+                sv = sum((r[c] if rc < 0 else (1.0 - r[c])) for c, rc in s_corrs[:3])
+                synth_vec.append(sv / max(1, len(s_corrs[:3])))
+        else:
+            c_single = params[0] if (params and params[0] in all_param_cols) else cols[0]
+            synth_vec = [r[c_single] for r in work_rows]
+        combined_vectors[synth_key] = synth_vec
+
+    all_model_scores, per_model_ms = _compute_5_ml_model_scores(
+        combined_vectors,
+        work_ys,
+        full_abs_r=full_abs_r,
+        full_stump_gain=full_stump,
+    )
+
+    # Extract base column scores and 1-indexed ranks across `cols`
+    base_model_scores: Dict[str, Dict[str, float]] = {}
     base_model_ranks: Dict[str, Dict[str, int]] = {}
     for m_spec in ML_MODEL_SPECS:
         m_id = m_spec["model_id"]
+        max_base = max((all_model_scores[m_id].get(c, 0.0) for c in cols), default=1.0) or 1.0
+        base_model_scores[m_id] = {
+            c: round(100.0 * (all_model_scores[m_id].get(c, 0.0) / max_base), 1)
+            for c in cols
+        }
         sorted_cols = sorted(cols, key=lambda c: -base_model_scores[m_id].get(c, 0.0))
         base_model_ranks[m_id] = {c: rk for rk, c in enumerate(sorted_cols, start=1)}
 
@@ -1679,7 +1874,7 @@ def run_multi_model_feature_selection(
 
     # 3. Evaluate each hypothesis across all 5 ML models
     hypothesis_consistency: List[Dict[str, Any]] = []
-    for hyp in hypotheses:
+    for idx, hyp in enumerate(hypotheses):
         h_id = hyp.get("hypothesis_id", "HYP_CUSTOM")
         h_type = hyp.get("hypothesis_type", "single_parameter")
         params = [obfuscate_column_name(p.upper()) for p in hyp.get("parameters", [])]
@@ -1689,48 +1884,21 @@ def run_multi_model_feature_selection(
         if len(params) == 1 and params[0] in STEP_OBFUSCATION_MAP.values():
             h_type = "step_level"
 
-        if h_type == "single_parameter" and params and params[0] in base_vectors:
+        if idx not in synth_key_by_idx and params and params[0] in cols:
             target_col = params[0]
             h_scores = {m["model_id"]: base_model_scores[m["model_id"]][target_col] for m in ML_MODEL_SPECS}
             h_ranks = {m["model_id"]: base_model_ranks[m["model_id"]][target_col] for m in ML_MODEL_SPECS}
         else:
-            # Construct synthetic feature vector for 2-way interaction, step composite, or deselected single col
-            synth_key = f"__HYP_{h_id}"
-            if h_type == "two_way_interaction" and len(params) >= 2:
-                c1 = params[0] if params[0] in all_param_cols else cols[0]
-                c2 = params[1] if params[1] in all_param_cols else cols[min(1, len(cols) - 1)]
-                mode = hyp.get("interaction_mode", "HIGH_LOW")
-                synth_vec = [
-                    (r[c1] * (1.0 - r[c2])) if mode == "HIGH_LOW" else (r[c1] * r[c2])
-                    for r in rows
-                ]
-            elif h_type == "step_level":
-                step_name = params[0] if params else "STEP_A"
-                step_cols = [c for c in cols if c.startswith(step_name + "_")]
-                if not step_cols:
-                    step_cols = [c for c in all_param_cols if c.startswith(step_name + "_")]
-                s_corrs = sorted(
-                    [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in step_cols],
-                    key=lambda item: -abs(item[1]),
-                )
-                synth_vec = []
-                for r in rows:
-                    sv = sum((r[c] if rc < 0 else (1.0 - r[c])) for c, rc in s_corrs[:3])
-                    synth_vec.append(sv / max(1, len(s_corrs[:3])))
-            else:
-                c_single = params[0] if (params and params[0] in all_param_cols) else cols[0]
-                synth_vec = [r[c_single] for r in rows]
-
-            aug_vectors = dict(base_vectors)
-            aug_vectors[synth_key] = synth_vec
-            aug_scores = _compute_5_ml_model_scores(aug_vectors, ys)
+            synth_key = synth_key_by_idx[idx]
+            pool_keys = cols + [synth_key]
             h_scores = {}
             h_ranks = {}
             for m_spec in ML_MODEL_SPECS:
                 m_id = m_spec["model_id"]
-                sorted_aug = sorted(aug_vectors.keys(), key=lambda k: -aug_scores[m_id].get(k, 0.0))
-                h_ranks[m_id] = sorted_aug.index(synth_key) + 1
-                h_scores[m_id] = aug_scores[m_id][synth_key]
+                max_pool = max((all_model_scores[m_id].get(k, 0.0) for k in pool_keys), default=1.0) or 1.0
+                sorted_pool = sorted(pool_keys, key=lambda k: -all_model_scores[m_id].get(k, 0.0))
+                h_ranks[m_id] = sorted_pool.index(synth_key) + 1
+                h_scores[m_id] = round(100.0 * (all_model_scores[m_id].get(synth_key, 0.0) / max_pool), 1)
 
         per_model_breakdown: List[Dict[str, Any]] = []
         in_top_k_count = 0
@@ -1754,6 +1922,7 @@ def run_multi_model_feature_selection(
                 "rank": rk,
                 "in_top_k": is_top,
                 "importance_pct": sc,
+                "compute_ms": per_model_ms.get(m_id, 0.0),
                 "badge_text": f"✓ #{rk}" if is_top else f"✗ #{rk}",
             })
 
@@ -1823,6 +1992,7 @@ def run_multi_model_feature_selection(
             s1, s2 = top_sets[i], top_sets[j]
             pair_overlaps.append(len(s1 & s2) / max(1, cutoff))
     concordance_pct = int(round(100.0 * (sum(pair_overlaps) / max(1, len(pair_overlaps)))))
+    total_ms = round((time.perf_counter() - t0) * 1000.0, 1)
 
     summary_kpis = {
         "consistent_hypotheses_hero": f"{len(consistent_hyps)} / {len(hypothesis_consistency)}",
@@ -1831,8 +2001,16 @@ def run_multi_model_feature_selection(
         "top_consensus_param": top_global["column"],
         "top_consensus_rank": f"Avg Rank #{top_global['mean_rank']:.1f}",
         "ensemble_agreement_hero": f"{concordance_pct}%",
-        "ensemble_agreement_label": f"Cross-Model Top-{cutoff} Feature Concordance",
+        "ensemble_agreement_label": f"Cross-Model Top-{cutoff} Feature Concordance ({total_ms} ms | {len(rows):,} Wafers)",
     }
+
+    models_with_timing = [
+        {
+            **m,
+            "compute_ms": per_model_ms.get(m["model_id"], 0.0),
+        }
+        for m in ML_MODEL_SPECS
+    ]
 
     a2ui_msg = build_feature_selection_a2ui(hypothesis_consistency, top_k_cutoff=cutoff)
 
@@ -1842,8 +2020,13 @@ def run_multi_model_feature_selection(
             "dataset_name": ds_meta["name"],
             "dataset_short_name": ds_meta["short_name"],
             "active_columns_count": len(cols),
+            "total_wafers_analyzed": len(rows),
+            "ensemble_subsample_rows": len(work_rows),
+            "total_cells_analyzed": len(rows) * len(cols),
+            "total_compute_ms": total_ms,
+            "per_model_compute_ms": per_model_ms,
             "top_k_cutoff": cutoff,
-            "models_metadata": ML_MODEL_SPECS,
+            "models_metadata": models_with_timing,
             "summary_kpis": summary_kpis,
             "hypothesis_consistency": hypothesis_consistency,
             "global_top_features": global_features[:12],
@@ -1851,5 +2034,6 @@ def run_multi_model_feature_selection(
         "ui": a2ui_msg,
         "ui_available": True,
     }
+
 
 
