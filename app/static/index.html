@@ -168,8 +168,8 @@
 <body class="min-h-screen">
 
   <!-- BlueprintJS Top Navbar (White & Blue Scheme) -->
-  <header class="bg-white border-b border-[#DCE0E5] sticky top-0 z-40 px-6 py-2.5 flex items-center justify-between shadow-sm">
-    <div class="flex items-center gap-3">
+  <header class="bg-white border-b border-[#DCE0E5] sticky top-0 z-40 px-6 py-2.5 flex items-center justify-between flex-wrap gap-3 shadow-sm">
+    <div class="flex items-center gap-2.5 flex-wrap">
       <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold bg-[#EDF3FB] text-[#2D72D2] border border-[#A8C6EE]">
         <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm1 10H7V7h2v4zm0-6H7V3h2v2z"/></svg>
         BlueprintJS • ADK + A2UI v0.9
@@ -177,21 +177,36 @@
       <h1 class="text-base font-bold text-[#1C2127] tracking-tight">
         Process Yield Hypothesis Workbench
       </h1>
+      <!-- Quick Dataset Switcher (Up to 3 Datasets) -->
+      <div class="inline-flex items-center gap-1.5 bg-[#F6F7F9] border border-[#DCE0E5] rounded px-2 py-0.5">
+        <span class="text-[11px] font-bold text-[#5F6B7C] uppercase">Dataset:</span>
+        <select id="navDatasetSelect" onchange="switchDataset(this.value)"
+          class="bg-transparent text-xs font-bold text-[#2D72D2] focus:outline-none cursor-pointer">
+          <option value="lot_alpha">1. Lot Alpha (STEP_A Thermal)</option>
+          <option value="lot_beta">2. Lot Beta (STEP_B Plasma RF)</option>
+          <option value="lot_gamma">3. Lot Gamma (STEP_C Dwell Time)</option>
+        </select>
+      </div>
       <span id="navSubsetBadge" class="px-2 py-0.5 rounded text-xs font-semibold bg-[#F6F7F9] text-[#5F6B7C] border border-[#DCE0E5]">
         52 / 100 Columns Active
       </span>
     </div>
 
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <button id="tabBtn1" onclick="switchScreen(1)"
         class="px-3 py-1.5 rounded text-xs font-semibold bp-btn-primary inline-flex items-center gap-1.5">
         <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14v3H1V2zm0 5h6v7H1V7zm8 0h6v7H9V7z"/></svg>
-        1. Column Selection &amp; Data Table
+        1. Datasets &amp; Columns
       </button>
       <button id="tabBtn2" onclick="switchScreen(2)"
         class="px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5">
         <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1h12a1 1 0 011 1v9a1 1 0 01-1 1H6l-4 3v-3a1 1 0 01-1-1V2a1 1 0 011-1z"/></svg>
-        2. Hypothesis Cards &amp; Evaluator
+        2. Hypothesis Queue &amp; Evaluator
+      </button>
+      <button id="tabBtn3" onclick="switchScreen(3)"
+        class="px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 12h3v3H2v-3zm5-5h3v8H7V7zm5-5h3v13h-3V2z"/></svg>
+        3. Multi-Model Feature Selection
       </button>
       <a href="/api/export_csv"
         class="px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5 text-[#2D72D2]">
@@ -204,13 +219,61 @@
   <main class="max-w-[1640px] mx-auto px-6 py-4 space-y-4">
 
     <!-- ================================================================== -->
-    <!-- SCREEN 1: COLUMN SELECTION & FULL FROZEN-HEADER TABLE              -->
+    <!-- SCREEN 1: 3-DATASET SELECTOR, COLUMN PICKER & FULL FROZEN TABLE    -->
     <!-- ================================================================== -->
     <section id="screen1" class="space-y-4">
+
+      <!-- 3-Dataset Selector Cards Bar -->
+      <div class="bp-card p-3.5 space-y-2">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-[#2D72D2]" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1C3.58 1 0 2.34 0 4v8c0 1.66 3.58 3 8 3s8-1.34 8-3V4c0-1.66-3.58-3-8-3zm0 2c3.87 0 6 .9 6 1s-2.13 1-6 1-6-.9-6-1 2.13-1 6-1z"/></svg>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-[#1C2127]">Select Fab Wafer Dataset (Up to 3 Lots)</h2>
+          </div>
+          <span id="activeDatasetBanner" class="text-xs font-semibold text-[#2D72D2]">
+            Active: 1. Lot Alpha (STEP_A Thermal)
+          </span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3" id="datasetCardsContainer">
+          <button onclick="switchDataset('lot_alpha')" data-ds="lot_alpha"
+            class="ds-card text-left p-3 rounded border border-[#2D72D2] bg-[#EDF3FB] transition">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-[#2D72D2]">1. Lot Alpha (STEP_A Thermal)</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-white text-[#2D72D2] border border-[#A8C6EE]">100 Wafers</span>
+            </div>
+            <div class="text-[11px] text-[#5F6B7C] mt-1">
+              Underfill thermal drift (`STEP_A_TEMPERATURE_01`) &amp; temp×pressure coupling.
+            </div>
+          </button>
+
+          <button onclick="switchDataset('lot_beta')" data-ds="lot_beta"
+            class="ds-card text-left p-3 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-[#1C2127]">2. Lot Beta (STEP_B Plasma RF)</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#F6F7F9] text-[#5F6B7C] border border-[#DCE0E5]">100 Wafers</span>
+            </div>
+            <div class="text-[11px] text-[#5F6B7C] mt-1">
+              Plasma etch RF power arcing (`STEP_B_RF_POWER_01`) &amp; gas flow×pressure instability.
+            </div>
+          </button>
+
+          <button onclick="switchDataset('lot_gamma')" data-ds="lot_gamma"
+            class="ds-card text-left p-3 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-[#1C2127]">3. Lot Gamma (STEP_C Dwell Time)</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#F6F7F9] text-[#5F6B7C] border border-[#DCE0E5]">100 Wafers</span>
+            </div>
+            <div class="text-[11px] text-[#5F6B7C] mt-1">
+              Thermal cure dwell duration excursion (`STEP_C_DURATION_01`) &amp; sputter pressure shift.
+            </div>
+          </button>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
         <!-- Left Column: Batch Pills + Manual 100-Column Checklist -->
-        <div class="lg:col-span-4 bp-card p-4 space-y-3 flex flex-col max-h-[680px]">
+        <div class="lg:col-span-4 bp-card p-4 space-y-3 flex flex-col max-h-[640px]">
           <div class="flex items-center justify-between border-b border-[#DCE0E5] pb-2">
             <div class="flex items-center gap-1.5">
               <svg class="w-4 h-4 text-[#2D72D2]" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14l-5.5 6.5V14l-3-1.5V8.5L1 2z"/></svg>
@@ -251,7 +314,7 @@
               placeholder="Filter columns (e.g. STEP_B, DURATION, 01)..."
               class="w-full rounded bg-white border border-[#DCE0E5] px-2.5 py-1.5 text-xs text-[#1C2127] focus:outline-none focus:border-[#2D72D2]" />
 
-            <div id="manualColumnList" class="flex-1 overflow-y-auto rounded border border-[#DCE0E5] bg-[#F6F7F9] p-2 grid grid-cols-1 gap-1 text-xs font-mono max-h-[300px]">
+            <div id="manualColumnList" class="flex-1 overflow-y-auto rounded border border-[#DCE0E5] bg-[#F6F7F9] p-2 grid grid-cols-1 gap-1 text-xs font-mono max-h-[260px]">
               <!-- Populated dynamically -->
             </div>
           </div>
@@ -264,7 +327,7 @@
         </div>
 
         <!-- Right Column: Full Non-Truncated 100-Wafer Table with Frozen Headers -->
-        <div class="lg:col-span-8 bp-card p-4 flex flex-col max-h-[680px]">
+        <div class="lg:col-span-8 bp-card p-4 flex flex-col max-h-[640px]">
           <div class="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-[#DCE0E5]">
             <div class="flex items-center gap-2">
               <svg class="w-4 h-4 text-[#2D72D2]" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14v12H1V2zm2 3v7h4V5H3zm6 0v7h4V5H9z"/></svg>
@@ -277,7 +340,7 @@
             </span>
           </div>
 
-          <div class="flex-1 overflow-auto rounded border border-[#DCE0E5] mt-3 relative max-h-[580px] bg-white">
+          <div class="flex-1 overflow-auto rounded border border-[#DCE0E5] mt-3 relative max-h-[540px] bg-white">
             <table class="text-left text-xs font-mono border-separate border-spacing-0 min-w-max">
               <thead id="previewHead" class="sticky top-0 z-20 bg-[#F6F7F9] text-[#1C2127] shadow-sm"></thead>
               <tbody id="previewBody"></tbody>
@@ -293,7 +356,7 @@
     <!-- ================================================================== -->
     <section id="screen2" class="hidden space-y-4">
 
-      <!-- Top Active Parameter Subset & Step Bar (Allows modifying step subsets directly on Screen 2!) -->
+      <!-- Top Active Parameter Subset & Step Bar -->
       <div class="bp-card px-4 py-2.5 flex items-center justify-between flex-wrap gap-2">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs font-bold uppercase tracking-wider text-[#5F6B7C] inline-flex items-center gap-1">
@@ -310,7 +373,10 @@
             <span>Live Gemini</span>
           </label>
           <button onclick="switchScreen(1)" class="px-2.5 py-1 rounded text-xs bp-btn-default text-[#2D72D2]">
-            Edit Columns (Screen 1)
+            Edit Dataset / Columns (Screen 1)
+          </button>
+          <button onclick="switchScreen(3)" class="px-2.5 py-1 rounded text-xs bp-btn-primary">
+            Verify Across 5 ML Models (Screen 3) →
           </button>
         </div>
       </div>
@@ -362,7 +428,7 @@
           </div>
         </div>
 
-        <!-- RIGHT PANEL (7 cols): Testing Queue + At-a-Glance Hero Evidence Cards -->
+        <!-- RIGHT PANEL (7 cols): Testing Queue (with Clear Queue) + Hero Evidence Cards -->
         <div class="lg:col-span-7 space-y-3">
 
           <!-- Queue Header Card -->
@@ -374,11 +440,18 @@
                   2. Testing Queue (0 Waiting)
                 </h2>
               </div>
-              <button onclick="evaluateNextInQueue()"
-                class="px-3.5 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5 shadow-sm">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
-                Test Next in Queue (1-by-1)
-              </button>
+              <div class="flex items-center gap-2">
+                <button id="clearQueueBtn" onclick="clearHypothesisQueue()"
+                  class="px-3 py-1.5 rounded text-xs bp-btn-default text-[#CD4246] inline-flex items-center gap-1">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M5 2V1h6v1h4v2H1V2h4zm-2 3h10l-1 10H4L3 5z"/></svg>
+                  Clear Queue
+                </button>
+                <button onclick="evaluateNextInQueue()"
+                  class="px-3.5 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5 shadow-sm">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l10 6-10 6V2z"/></svg>
+                  Test Next in Queue (1-by-1)
+                </button>
+              </div>
             </div>
             <div id="queuePills" class="flex flex-wrap gap-1.5 text-xs text-[#5F6B7C]">
               Queue cards on the left to test them 1-by-1.
@@ -389,6 +462,150 @@
           <div id="evaluatedCanvas" class="space-y-4">
             <div id="emptyEvalPlaceholder" class="bp-card p-10 text-center text-[#5F6B7C] text-xs">
               Click <strong>+ Queue</strong> on any candidate card (or <strong>+ Queue All</strong>), then click <strong>Test Next in Queue</strong>.
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- SCREEN 3: MULTI-MODEL FEATURE SELECTION & CONSISTENCY WORKBENCH    -->
+    <!-- ================================================================== -->
+    <section id="screen3" class="hidden space-y-4">
+
+      <!-- Screen 3 Top Control Bar -->
+      <div class="bp-card px-4 py-3 flex items-center justify-between flex-wrap gap-3">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold intent-blue">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 12h3v3H2v-3zm5-5h3v8H7V7zm5-5h3v13h-3V2z"/></svg>
+            5-Model Ensemble Feature Selector
+          </span>
+          <span id="fsDatasetBadge" class="text-xs font-bold text-[#1C2127]">
+            1. Lot Alpha (STEP_A Thermal) • 52/100 Active Columns
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-bold text-[#5F6B7C] uppercase">Top-K Threshold:</span>
+          <button onclick="setTopKAndRun(3)" id="topKBtn3" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 3</button>
+          <button onclick="setTopKAndRun(5)" id="topKBtn5" class="px-2.5 py-1 rounded text-xs bp-btn-primary">Top 5 (Default)</button>
+          <button onclick="setTopKAndRun(10)" id="topKBtn10" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 10</button>
+          <button onclick="runMultiModelFeatureSelection()"
+            class="px-3 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M13.65 2.35A8 8 0 1016 8h-2a6 6 0 11-1.76-4.24L10 6h6V0l-2.35 2.35z"/></svg>
+            Run 5 ML Models
+          </button>
+        </div>
+      </div>
+
+      <!-- 3 Hero KPI Summary Cards (Numbers take up 70+% of card space) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="hero-kpi-card intent-emerald">
+          <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
+            <span>1. Consistent Hypotheses</span>
+            <span>≥4/5 Models Agree</span>
+          </div>
+          <div id="fsKpiConsistentHero" class="hero-kpi-number">-- / --</div>
+          <div id="fsKpiConsistentLabel" class="text-xs font-semibold text-[#1C2127]">
+            Confirmed in Top-5 across ML families
+          </div>
+        </div>
+
+        <div class="hero-kpi-card intent-blue">
+          <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
+            <span>2. #1 Consensus Feature</span>
+            <span id="fsKpiTopRankBadge">Avg Rank #1.0</span>
+          </div>
+          <div id="fsKpiTopFeatureHero" class="hero-kpi-number">5 / 5</div>
+          <div id="fsKpiTopFeatureParam" class="text-xs font-bold font-mono text-[#1C2127] truncate">
+            STEP_A_TEMPERATURE_01
+          </div>
+        </div>
+
+        <div class="hero-kpi-card bp-card">
+          <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-[#5F6B7C]">
+            <span>3. Cross-Model Concordance</span>
+            <span class="text-[#2D72D2]">5 ML Families</span>
+          </div>
+          <div id="fsKpiConcordanceHero" class="hero-kpi-number text-[#2D72D2]">--%</div>
+          <div id="fsKpiConcordanceLabel" class="text-xs font-semibold text-[#5F6B7C]">
+            L1 Lasso • Random Forest • Grad. Boost • Permutation • Mutual Info
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Screen 3 Grid: Left = Hypothesis Consistency Cards; Right = Chart + Global Leaderboard -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+        <!-- Left 7 Columns: Per-Hypothesis 5-Model Consistency Cards -->
+        <div class="lg:col-span-7 space-y-3">
+          <div class="bp-card p-4 space-y-3">
+            <div class="flex items-center justify-between border-b border-[#DCE0E5] pb-2.5">
+              <div class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-[#238551]" viewBox="0 0 16 16" fill="currentColor"><path d="M6 10.6L3.4 8 2 9.4l4 4 8-8L12.6 4 6 10.6z"/></svg>
+                <h2 class="text-sm font-bold text-[#1C2127]">
+                  Hypothesis Feature Selection Consistency (Across 5 ML Models)
+                </h2>
+              </div>
+              <span class="text-xs text-[#5F6B7C]">
+                Checks if each hypothesis ranks in Top-K consistently
+              </span>
+            </div>
+
+            <div id="fsHypothesesContainer" class="space-y-3">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Right 5 Columns: Cross-Model Importance Chart + Global Top-12 Feature Matrix -->
+        <div class="lg:col-span-5 space-y-4">
+
+          <!-- Grouped Bar Chart: Importance (%) Across 5 ML Models -->
+          <div class="bp-card p-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-[#1C2127]">
+                Cross-Model Importance Score (0–100%)
+              </h3>
+              <span class="text-[11px] text-[#5F6B7C]">5 ML Families</span>
+            </div>
+            <div class="rounded bg-white border border-[#DCE0E5] p-2.5">
+              <canvas id="fsMultiModelChart" height="210"></canvas>
+            </div>
+          </div>
+
+          <!-- Global Top-12 Parameter Consensus Leaderboard Table -->
+          <div class="bp-card p-4 space-y-2.5">
+            <div class="flex items-center justify-between border-b border-[#DCE0E5] pb-2">
+              <div>
+                <h3 class="text-sm font-bold text-[#1C2127]">
+                  Global Top-12 Parameter Consensus Leaderboard
+                </h3>
+                <p class="text-[11px] text-[#5F6B7C]">
+                  Individual active parameters ranked across all 5 ML models
+                </p>
+              </div>
+            </div>
+
+            <div class="overflow-x-auto rounded border border-[#DCE0E5] max-h-[420px]">
+              <table class="w-full text-left text-xs font-mono border-separate border-spacing-0">
+                <thead class="sticky top-0 bg-[#F6F7F9] text-[#1C2127] z-10">
+                  <tr>
+                    <th class="py-2 px-2.5 border-b border-r border-[#DCE0E5]">Parameter</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center">Consensus</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center" title="L1 Lasso">Lasso</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center" title="Random Forest">RF</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center" title="Gradient Boosting">GBDT</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center" title="Permutation Importance">Perm</th>
+                    <th class="py-2 px-2 border-b border-r border-[#DCE0E5] text-center" title="Mutual Info + Spearman">MI</th>
+                    <th class="py-2 px-2 border-b border-[#DCE0E5] text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="fsGlobalTableBody">
+                  <!-- Populated dynamically -->
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -407,13 +624,18 @@
   </main>
 
   <script>
+    let currentDatasetId = 'lot_alpha';
     let activeBatches = new Set(['TEMPERATURE', 'PRESSURE', 'STEP_A']);
     let allAvailableColumns = [];
     let selectedColumnsSet = new Set();
     let isManualColumnMode = false;
     let subsetDirty = false;
     let currentCandidates = [];
+    let currentQueue = [];
     let hasInitialScanRun = false;
+    let currentScreen = 1;
+    let currentTopKCutoff = 5;
+    let fsChartInstance = null;
 
     // Clean Markdown-to-HTML renderer
     function renderMarkdown(mdText) {
@@ -465,19 +687,69 @@
       return 'intent-rose';
     }
 
+    function updateDatasetCardsUI() {
+      const sel = document.getElementById('navDatasetSelect');
+      if (sel) sel.value = currentDatasetId;
+      document.querySelectorAll('.ds-card').forEach(btn => {
+        const ds = btn.getAttribute('data-ds');
+        if (ds === currentDatasetId) {
+          btn.className = 'ds-card text-left p-3 rounded border border-[#2D72D2] bg-[#EDF3FB] transition';
+        } else {
+          btn.className = 'ds-card text-left p-3 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition';
+        }
+      });
+    }
+
+    async function switchDataset(datasetId) {
+      const nextDs = datasetId || 'lot_alpha';
+      const dsChanged = nextDs !== currentDatasetId;
+      currentDatasetId = nextDs;
+      subsetDirty = true;
+      updateDatasetCardsUI();
+      if (dsChanged) {
+        await clearHypothesisQueue();
+      }
+      // When switching to Lot Beta (STEP_B) or Lot Gamma (STEP_C), ensure all 100 columns or relevant batch are active if not in manual mode
+      if (!isManualColumnMode) {
+        if (currentDatasetId === 'lot_beta') {
+          activeBatches = new Set(['ALL']);
+        } else if (currentDatasetId === 'lot_gamma') {
+          activeBatches = new Set(['ALL']);
+        } else if (dsChanged && currentDatasetId === 'lot_alpha') {
+          activeBatches = new Set(['TEMPERATURE', 'PRESSURE', 'STEP_A']);
+        }
+        updateBatchButtonsUI();
+      }
+      await loadPreprocessPreview();
+      if (currentScreen === 2) {
+        subsetDirty = false;
+        await sendChat('');
+      } else if (currentScreen === 3) {
+        subsetDirty = false;
+        await runMultiModelFeatureSelection();
+      }
+    }
+
     function switchScreen(num) {
+      currentScreen = num;
       document.getElementById('screen1').classList.toggle('hidden', num !== 1);
       document.getElementById('screen2').classList.toggle('hidden', num !== 2);
-      document.getElementById('tabBtn1').className = num === 1
-        ? 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-primary inline-flex items-center gap-1.5'
-        : 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5';
-      document.getElementById('tabBtn2').className = num === 2
-        ? 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-primary inline-flex items-center gap-1.5'
-        : 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5';
+      document.getElementById('screen3').classList.toggle('hidden', num !== 3);
+
+      [1, 2, 3].forEach(idx => {
+        const btn = document.getElementById(`tabBtn${idx}`);
+        if (btn) {
+          btn.className = idx === num
+            ? 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-primary inline-flex items-center gap-1.5'
+            : 'px-3 py-1.5 rounded text-xs font-semibold bp-btn-default inline-flex items-center gap-1.5';
+        }
+      });
 
       if (num === 2 && (!hasInitialScanRun || subsetDirty)) {
         subsetDirty = false;
         sendChat('');
+      } else if (num === 3) {
+        runMultiModelFeatureSelection();
       }
     }
 
@@ -523,12 +795,10 @@
       loadPreprocessPreview();
     }
 
-    // Quick step toggle directly from Screen 2 bar (e.g. deselect half of STEP_B or toggle STEP_B)
     async function quickModifyStepOnScreen2(stepName, mode) {
       isManualColumnMode = true;
       const stepCols = allAvailableColumns.filter(c => c.startsWith(stepName + '_'));
       if (mode === 'half') {
-        // Deselect first 8 columns of that step (including _01 drivers) to test partial step subset!
         stepCols.forEach((c, idx) => {
           if (idx < 8) selectedColumnsSet.delete(c);
           else selectedColumnsSet.add(c);
@@ -607,8 +877,8 @@
 
     async function loadPreprocessPreview() {
       const payload = isManualColumnMode
-        ? { batches: ['CUSTOM'], custom_columns: Array.from(selectedColumnsSet) }
-        : { batches: Array.from(activeBatches) };
+        ? { batches: ['CUSTOM'], custom_columns: Array.from(selectedColumnsSet), dataset_id: currentDatasetId }
+        : { batches: Array.from(activeBatches), dataset_id: currentDatasetId };
 
       const res = await fetch('/api/preprocess', {
         method: 'POST',
@@ -623,14 +893,17 @@
       const selCols = data.selected_columns || [];
       selectedColumnsSet = new Set(selCols);
 
+      const dsShort = data.dataset_short_name || currentDatasetId;
       document.getElementById('selectedColCountBadge').textContent = `${selCols.length} / ${allAvailableColumns.length || 100} Selected`;
-      document.getElementById('navSubsetBadge').textContent = `${selCols.length} / 100 Columns Active`;
+      document.getElementById('navSubsetBadge').textContent = `${selCols.length} / 100 Cols Active`;
+      const bannerEl = document.getElementById('activeDatasetBanner');
+      if (bannerEl) bannerEl.textContent = `Active: ${data.dataset_name || dsShort}`;
       renderManualColumnChecklist();
       renderStepSubsetBar();
 
       const rows = data.full_rows || data.preview_rows || [];
       document.getElementById('previewMetaBadge').textContent =
-        `${rows.length} Wafers × ${selCols.length} Active Columns (${rows.length * selCols.length} cells)`;
+        `${dsShort} • ${rows.length} Wafers × ${selCols.length} Active Columns`;
 
       const thead = document.getElementById('previewHead');
       let headHtml = `
@@ -694,6 +967,8 @@
       container.innerHTML = '';
       if (!currentCandidates.length) return;
 
+      const queuedIds = new Set((currentQueue || []).map(q => q.hypothesis_id));
+
       currentCandidates.forEach((c, idx) => {
         const typeTag = c.hypothesis_type === 'step_level'
           ? 'STAGE'
@@ -704,6 +979,7 @@
         const cpHero = c.ceteris_paribus_hero || '-1.35% / +10°C';
         const cpShort = c.ceteris_paribus_short || 'All else equal';
         const shortTitle = c.short_title || c.title;
+        const isQueued = queuedIds.has(c.hypothesis_id);
         const caveatsList = (c.caveats_and_confounders || [])
           .map(item => `<li>${renderMarkdown(item)}</li>`)
           .join('');
@@ -721,9 +997,9 @@
                 ${shortTitle}
               </h3>
             </div>
-            <button onclick="addToQueue('${c.hypothesis_id}', this)"
-              class="px-2.5 py-1 rounded text-xs bp-btn-primary shrink-0">
-              + Queue
+            <button data-queue-btn="${c.hypothesis_id}" onclick="addToQueue('${c.hypothesis_id}', this)"
+              class="px-2.5 py-1 rounded text-xs ${isQueued ? 'bp-btn-success' : 'bp-btn-primary'} shrink-0">
+              ${isQueued ? '✓ Queued' : '+ Queue'}
             </button>
           </div>
 
@@ -780,6 +1056,7 @@
           body: JSON.stringify({
             message: trimmed,
             selected_columns: Array.from(selectedColumnsSet),
+            dataset_id: currentDatasetId,
             use_llm: useLlm
           })
         });
@@ -809,18 +1086,19 @@
     }
 
     function renderQueueBar(queue) {
+      currentQueue = queue || [];
       const box = document.getElementById('queuePills');
       const header = document.getElementById('queueTitleHeader');
-      if (!queue || queue.length === 0) {
+      if (!currentQueue.length) {
         header.textContent = '2. Testing Queue (0 Waiting)';
         box.textContent = 'Queue cards on the left to test them 1-by-1.';
         return;
       }
-      const pendingCount = queue.filter(q => q.queue_status === 'QUEUED').length;
-      const testedCount = queue.filter(q => q.queue_status === 'TESTED').length;
+      const pendingCount = currentQueue.filter(q => q.queue_status === 'QUEUED').length;
+      const testedCount = currentQueue.filter(q => q.queue_status === 'TESTED').length;
       header.textContent = `2. Testing Queue (${pendingCount} Waiting • ${testedCount} Tested)`;
 
-      box.innerHTML = queue.map((q, i) => {
+      box.innerHTML = currentQueue.map((q, i) => {
         const tested = q.queue_status === 'TESTED';
         const label = q.short_title || q.title;
         return `<span class="px-2 py-0.5 rounded text-xs font-semibold border ${
@@ -847,15 +1125,41 @@
 
     async function queueAllCandidates() {
       for (const c of currentCandidates) {
-        await addToQueue(c.hypothesis_id, null);
+        const btn = document.querySelector(`[data-queue-btn="${c.hypothesis_id}"]`);
+        await addToQueue(c.hypothesis_id, btn);
       }
+    }
+
+    async function clearHypothesisQueue() {
+      const res = await fetch('/api/queue/clear', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({clear_evaluated: true})
+      });
+      const data = await res.json();
+      renderQueueBar(data.hypothesis_queue || []);
+      // Reset all candidate card queue buttons back to '+ Queue'
+      document.querySelectorAll('[data-queue-btn]').forEach(btn => {
+        btn.textContent = '+ Queue';
+        btn.className = 'px-2.5 py-1 rounded text-xs bp-btn-primary shrink-0';
+      });
+      const canvas = document.getElementById('evaluatedCanvas');
+      canvas.innerHTML = `
+        <div id="emptyEvalPlaceholder" class="bp-card p-10 text-center text-[#5F6B7C] text-xs">
+          Queue cleared. Click <strong>+ Queue</strong> on any candidate card (or <strong>+ Queue All</strong>), then click <strong>Test Next in Queue</strong>.
+        </div>
+      `;
+      await refreshObservability();
     }
 
     async function evaluateNextInQueue() {
       const res = await fetch('/api/queue/evaluate_next', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({selected_columns: Array.from(selectedColumnsSet)})
+        body: JSON.stringify({
+          selected_columns: Array.from(selectedColumnsSet),
+          dataset_id: currentDatasetId
+        })
       });
       const data = await res.json();
       if (data.status === 'queue_empty') {
@@ -904,7 +1208,6 @@
 
         <!-- HERO KPI ROW: Numbers take up 70+% of each card's visual space -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <!-- Hero Card 1: Statistical Certainty -->
           <div class="hero-kpi-card ${intentCls}">
             <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
               <span>1. Statistical Certainty</span>
@@ -916,7 +1219,6 @@
             </div>
           </div>
 
-          <!-- Hero Card 2: Ceteris Paribus Effect -->
           <div class="hero-kpi-card intent-blue">
             <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
               <span>2. Ceteris Paribus Effect</span>
@@ -1040,10 +1342,196 @@
               x: { ticks: { color: '#5F6B7C', font: { size: 10 } }, title: { display: true, text: 'Normalized Setting (0-1)', color: '#5F6B7C' } },
               y: { ticks: { color: '#5F6B7C', font: { size: 10 } }, title: { display: true, text: 'Yield (%)', color: '#5F6B7C' } }
             },
-            plugins: { legend: { labels: { color: '#1C2127', font: { size: 10 } } } }
+            plugins: { legend: { color: '#1C2127', labels: { color: '#1C2127', font: { size: 10 } } } }
           }
         });
       }
+    }
+
+    // ========================================================================
+    // Screen 3: Multi-Model Feature Selection & Consistency Rendering
+    // ========================================================================
+    function setTopKAndRun(k) {
+      currentTopKCutoff = k;
+      [3, 5, 10].forEach(val => {
+        const btn = document.getElementById(`topKBtn${val}`);
+        if (btn) {
+          btn.className = val === k
+            ? 'px-2.5 py-1 rounded text-xs bp-btn-primary'
+            : 'px-2.5 py-1 rounded text-xs bp-btn-default';
+        }
+      });
+      runMultiModelFeatureSelection();
+    }
+
+    async function runMultiModelFeatureSelection() {
+      const container = document.getElementById('fsHypothesesContainer');
+      if (container) {
+        container.innerHTML = `<div class="text-xs text-[#2D72D2] font-semibold animate-pulse p-4">Running L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge &amp; Mutual Information across ${selectedColumnsSet.size}/100 active columns...</div>`;
+      }
+
+      const res = await fetch('/api/feature_selection', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          selected_columns: Array.from(selectedColumnsSet),
+          top_k_cutoff: currentTopKCutoff,
+          dataset_id: currentDatasetId
+        })
+      });
+      const payload = await res.json();
+      const fs = payload.feature_selection;
+      if (!fs) return;
+
+      document.getElementById('fsDatasetBadge').textContent =
+        `${fs.dataset_short_name} • ${fs.active_columns_count}/100 Active Columns • Top-${fs.top_k_cutoff} Cutoff`;
+
+      const kpis = fs.summary_kpis || {};
+      document.getElementById('fsKpiConsistentHero').textContent = kpis.consistent_hypotheses_hero || '--';
+      document.getElementById('fsKpiConsistentLabel').textContent = kpis.consistent_hypotheses_label || '';
+      document.getElementById('fsKpiTopFeatureHero').textContent = kpis.top_consensus_hero || '5 / 5';
+      document.getElementById('fsKpiTopFeatureParam').textContent = kpis.top_consensus_param || '';
+      document.getElementById('fsKpiTopRankBadge').textContent = kpis.top_consensus_rank || 'Avg Rank #1.0';
+      document.getElementById('fsKpiConcordanceHero').textContent = kpis.ensemble_agreement_hero || '90%';
+
+      const hyps = fs.hypothesis_consistency || [];
+      container.innerHTML = hyps.map((h, idx) => {
+        const intentCls = getIntentClass(h.confidence_color || 'emerald');
+        const qBadge = h.queue_status === 'TESTED'
+          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-emerald">✓ TESTED</span>'
+          : (h.queue_status === 'QUEUED'
+            ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-amber">⏳ QUEUED</span>'
+            : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#F6F7F9] text-[#5F6B7C] border border-[#DCE0E5]">CANDIDATE</span>');
+
+        const modelPills = (h.per_model_breakdown || []).map(m => {
+          const pillCls = m.in_top_k
+            ? 'intent-emerald font-bold'
+            : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]';
+          return `
+            <div class="rounded border px-2 py-1.5 flex flex-col items-center justify-center text-center ${pillCls}">
+              <span class="text-[10px] uppercase tracking-tight opacity-85">${m.short_name}</span>
+              <span class="text-xs font-mono font-bold mt-0.5">${m.badge_text}</span>
+              <span class="text-[10px] opacity-75">${m.importance_pct}% imp</span>
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div class="bp-card p-4 space-y-3 hover:border-[#2D72D2] transition">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-[#5F6B7C]">#${idx + 1}</span>
+                ${qBadge}
+                <h3 class="text-sm font-bold text-[#1C2127]">${h.short_title}</h3>
+              </div>
+              <span class="px-2 py-0.5 rounded text-[11px] font-bold ${intentCls}">
+                ${h.consistency_verdict}
+              </span>
+            </div>
+
+            <!-- Two 70+% Hero KPI Boxes for Each Hypothesis -->
+            <div class="grid grid-cols-2 gap-3">
+              <div class="cand-kpi-box ${intentCls}">
+                <div class="text-[10px] font-bold uppercase tracking-wider opacity-85">
+                  Top-${fs.top_k_cutoff} Model Consensus
+                </div>
+                <div class="cand-kpi-num">${h.consistency_hero}</div>
+                <div class="text-[10px] font-semibold opacity-90">${h.consistency_label}</div>
+              </div>
+
+              <div class="cand-kpi-box intent-blue">
+                <div class="text-[10px] font-bold uppercase tracking-wider opacity-85">
+                  Mean Feature Rank (5 ML Models)
+                </div>
+                <div class="cand-kpi-ceteris">${h.mean_rank_hero}</div>
+                <div class="text-[10px] font-semibold opacity-90">Avg Importance: ${h.mean_importance_pct}%</div>
+              </div>
+            </div>
+
+            <!-- 5-Model At-a-Glance Check Strip -->
+            <div class="grid grid-cols-5 gap-1.5">
+              ${modelPills}
+            </div>
+
+            <div class="text-xs text-[#5F6B7C] bg-[#F6F7F9] border border-[#DCE0E5] rounded px-2.5 py-1.5 flex items-center gap-1.5">
+              <span class="text-[#2D72D2] font-bold">📊</span>
+              <span>${h.plain_english_takeaway}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Render Global Top-12 Parameter Consensus Table
+      const tbody = document.getElementById('fsGlobalTableBody');
+      const topFeats = fs.global_top_features || [];
+      tbody.innerHTML = topFeats.map((f, rIdx) => {
+        const rowBg = rIdx % 2 === 0 ? 'bg-white' : 'bg-[#F6F7F9]';
+        const consCls = f.models_in_top_k >= 4
+          ? 'intent-emerald'
+          : (f.models_in_top_k >= 2 ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
+        const rkCells = (f.per_model_ranks || []).map(m => {
+          const cCls = m.in_top_k ? 'text-[#238551] font-bold' : 'text-[#5F6B7C]';
+          return `<td class="py-1.5 px-2 border-b border-r border-[#DCE0E5] text-center ${cCls}">#${m.rank}</td>`;
+        }).join('');
+        return `
+          <tr class="${rowBg} hover:bg-[#EDF3FB]/60">
+            <td class="py-1.5 px-2.5 border-b border-r border-[#DCE0E5] font-bold text-[#1C2127] whitespace-nowrap" title="${f.column}">
+              ${f.short_name}
+            </td>
+            <td class="py-1.5 px-2 border-b border-r border-[#DCE0E5] text-center">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${consCls}">${f.consistency_hero}</span>
+            </td>
+            ${rkCells}
+            <td class="py-1.5 px-2 border-b border-[#DCE0E5] text-center">
+              <button onclick="addToQueue('${f.hypothesis_id}', this)"
+                class="px-2 py-0.5 rounded text-[10px] bp-btn-primary">
+                + Queue
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      // Render Grouped Bar Chart of Cross-Model Importance
+      const chartCanvas = document.getElementById('fsMultiModelChart');
+      if (fsChartInstance) {
+        fsChartInstance.destroy();
+      }
+      const chartHyps = hyps.slice(0, 6);
+      const modelPalette = ['#2D72D2', '#238551', '#C87619', '#5F6B7C', '#CD4246'];
+      const datasets = (fs.models_metadata || []).map((m, mIdx) => ({
+        label: m.short_name,
+        data: chartHyps.map(h => {
+          const found = (h.per_model_breakdown || []).find(b => b.model_id === m.model_id);
+          return found ? found.importance_pct : 0;
+        }),
+        backgroundColor: modelPalette[mIdx % modelPalette.length]
+      }));
+
+      fsChartInstance = new Chart(chartCanvas, {
+        type: 'bar',
+        data: {
+          labels: chartHyps.map(h => h.short_title),
+          datasets: datasets
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { ticks: { color: '#1C2127', font: { size: 9 } } },
+            y: {
+              min: 0,
+              max: 100,
+              ticks: { color: '#5F6B7C', font: { size: 10 } },
+              title: { display: true, text: 'Normalized Importance (%)', color: '#5F6B7C' }
+            }
+          },
+          plugins: {
+            legend: { labels: { color: '#1C2127', font: { size: 10 } } }
+          }
+        }
+      });
+
+      await refreshObservability();
     }
 
     async function refreshObservability() {
@@ -1054,9 +1542,18 @@
 
     // URL query params for automated headless browser verification
     window.addEventListener('DOMContentLoaded', async () => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('dataset')) {
+        currentDatasetId = params.get('dataset');
+        if (currentDatasetId !== 'lot_alpha') {
+          activeBatches = new Set(['ALL']);
+          updateBatchButtonsUI();
+        }
+        updateDatasetCardsUI();
+      }
       await loadPreprocessPreview();
       await refreshObservability();
-      const params = new URLSearchParams(window.location.search);
+
       if (params.get('screen') === '2') {
         hasInitialScanRun = true;
         switchScreen(2);
@@ -1069,6 +1566,11 @@
           await queueAllCandidates();
           await evaluateNextInQueue();
         }
+      } else if (params.get('screen') === '3') {
+        hasInitialScanRun = true;
+        await sendChat('');
+        await queueAllCandidates();
+        switchScreen(3);
       }
     });
   </script>

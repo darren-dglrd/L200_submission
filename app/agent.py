@@ -38,9 +38,15 @@ import urllib.request
 import uuid
 
 from app.guardrails import AgentObservability, SafetyPlugin
-from app.stats_engine import discover_candidate_hypotheses, evaluate_single_hypothesis
+from app.stats_engine import (
+    discover_candidate_hypotheses,
+    evaluate_single_hypothesis,
+    run_multi_model_feature_selection,
+)
 from skills.data_preprocess.scripts.preprocess import (
     DATA_DIR,
+    DATASET_CATALOG,
+    normalize_dataset_id,
     obfuscate_and_select_batches,
 )
 
@@ -303,9 +309,15 @@ def run_data_preprocess_skill(
     require_hitl_above: int = 150,
     confirmed: bool = False,
     data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
     """Execute the `data_preprocess` Agent Skill to obfuscate confidential wafer data and select parameter batches or hand-picked columns."""
-    res = obfuscate_and_select_batches(batches=batches, custom_columns=custom_columns, data_dir=data_dir)
+    res = obfuscate_and_select_batches(
+        batches=batches,
+        custom_columns=custom_columns,
+        data_dir=data_dir,
+        dataset_id=dataset_id,
+    )
     if res["selected_columns_count"] > require_hitl_above and not confirmed:
         return {
             "status": "pending",
@@ -336,17 +348,24 @@ class ProcessHypothesisMultiAgentApp:
         self,
         batches: List[str],
         custom_columns: Optional[List[str]] = None,
+        dataset_id: Optional[str] = None,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
-        """Invoke the `data_preprocess` Agent Skill and persist `selected_columns` in session.state."""
+        """Invoke the `data_preprocess` Agent Skill and persist `selected_columns` & `dataset_id` in session.state."""
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         session = self.session_service.get_or_create_session(session_id=session_id)
+        prev_ds = session["state"].get("dataset_id", "lot_alpha")
+        active_ds = normalize_dataset_id(dataset_id or prev_ds)
+        if active_ds != prev_ds:
+            session["state"]["hypothesis_queue"] = []
+            session["state"]["evaluated_results"] = []
 
         def _exec():
             return run_data_preprocess_skill(
                 batches=batches,
                 custom_columns=custom_columns,
                 data_dir=self.data_dir,
+                dataset_id=active_ds,
             )
 
         res, _ = self.observability.trace_span(
@@ -354,10 +373,15 @@ class ProcessHypothesisMultiAgentApp:
             operation_name="skill:data_preprocess",
             actor="data_preprocess_skill",
             fn=_exec,
-            attributes={"batches": batches, "custom_columns_count": len(custom_columns or [])},
+            attributes={
+                "dataset_id": active_ds,
+                "batches": batches,
+                "custom_columns_count": len(custom_columns or []),
+            },
         )
 
         clean_res, redactions = self.safety_plugin.check_output_pii(res)
+        session["state"]["dataset_id"] = active_ds
         session["state"]["selected_batches"] = clean_res.get("selected_batches", batches)
         session["state"]["selected_columns"] = clean_res.get("selected_columns", [])
         session["state"]["obfuscated_csv_path"] = clean_res.get("obfuscated_csv_path", "")
@@ -367,7 +391,11 @@ class ProcessHypothesisMultiAgentApp:
             state=session["state"],
             author="data_preprocess_skill",
             role="model",
-            content={"skill": "data_preprocess", "selected_columns_count": clean_res.get("selected_columns_count", 0)},
+            content={
+                "skill": "data_preprocess",
+                "dataset_id": active_ds,
+                "selected_columns_count": clean_res.get("selected_columns_count", 0),
+            },
             compaction_config=self.compaction_config,
         )
         clean_res["trace_id"] = trace_id
@@ -378,6 +406,7 @@ class ProcessHypothesisMultiAgentApp:
         self,
         user_message: str = "",
         selected_columns: Optional[List[str]] = None,
+        dataset_id: Optional[str] = None,
         use_llm: bool = False,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
@@ -405,12 +434,19 @@ class ProcessHypothesisMultiAgentApp:
             }
 
         prev_scanned_cols = list(session["state"].get("last_scanned_columns") or session["state"].get("selected_columns") or [])
+        prev_ds = session["state"].get("dataset_id", "lot_alpha")
+        active_ds = normalize_dataset_id(dataset_id or prev_ds)
+        if active_ds != prev_ds:
+            session["state"]["hypothesis_queue"] = []
+            session["state"]["evaluated_results"] = []
+        session["state"]["dataset_id"] = active_ds
+        ds_meta = DATASET_CATALOG[active_ds]
 
         # If frontend passed explicit `selected_columns`, sync them immediately!
         if selected_columns is not None and len(selected_columns) > 0:
             session["state"]["selected_columns"] = list(selected_columns)
         elif not session["state"].get("selected_columns"):
-            self.preprocess_dataset(batches=["ALL"], session_id=session_id)
+            self.preprocess_dataset(batches=["ALL"], dataset_id=active_ds, session_id=session_id)
             session = self.session_service.get_or_create_session(session_id=session_id)
 
         selected_cols = list(session["state"]["selected_columns"])
@@ -420,13 +456,14 @@ class ProcessHypothesisMultiAgentApp:
         removed_cols = [c for c in prev_scanned_cols if c not in selected_cols] if prev_scanned_cols else []
         session["state"]["last_scanned_columns"] = list(selected_cols)
 
-        # 2. Execute `hypothesis_generator_agent` analytical discovery strictly on `selected_cols`
+        # 2. Execute `hypothesis_generator_agent` analytical discovery strictly on `selected_cols` & `active_ds`
         def _exec_gen():
             return discover_candidate_hypotheses(
                 selected_columns=selected_cols,
                 user_query=user_message,
                 top_k=8,
                 data_dir=self.data_dir,
+                dataset_id=active_ds,
             )
 
         discovery_bundle, _ = self.observability.trace_span(
@@ -434,7 +471,11 @@ class ProcessHypothesisMultiAgentApp:
             operation_name="agent:hypothesis_generator_agent.discover_candidate_hypotheses",
             actor="hypothesis_generator_agent",
             fn=_exec_gen,
-            attributes={"selected_columns_count": len(selected_cols), "user_message": user_message},
+            attributes={
+                "dataset_id": active_ds,
+                "selected_columns_count": len(selected_cols),
+                "user_message": user_message,
+            },
         )
 
         candidates = list(discovery_bundle["data"]["candidate_hypotheses"])
@@ -471,6 +512,7 @@ class ProcessHypothesisMultiAgentApp:
                 parts.append(f"**+{len(added_cols)} added** ({add_preview}{add_more})")
             delta_line = f"- **Column Selection Updated:** {'; '.join(parts)} — all statistics & ceteris paribus slopes recalculated on your **{len(selected_cols)}/100** active columns.\n"
 
+        ds_line = f"- **Active Dataset:** `{ds_meta['short_name']}` ({ds_meta['description']})\n"
         partial_step_line = f"- **Modified Step Subsets:** {'; '.join(partial_steps[:2])}.\n" if partial_steps else ""
 
         if user_message.strip():
@@ -516,7 +558,8 @@ class ProcessHypothesisMultiAgentApp:
                     candidates = int_cards + other_cards
                 top_int = candidates[0]
                 chat_reply = (
-                    f"**Interaction Scan ({len(selected_cols)}/100 Active Columns):**\n\n"
+                    f"**Interaction Scan ({len(selected_cols)}/100 Active Columns • {ds_meta['short_name']}):**\n\n"
+                    f"{ds_line}"
                     f"{delta_line}"
                     f"{partial_step_line}"
                     f"- **Top Active Interaction:** `{top_int.get('short_title', top_int['title'])}` — **{top_int.get('confidence_hero', '99.9%')}** certainty, **{top_int.get('ceteris_paribus_hero', '')}**.\n"
@@ -566,7 +609,8 @@ class ProcessHypothesisMultiAgentApp:
                     else " (all 20 columns active)"
                 )
                 chat_reply = (
-                    f"**Stage Analysis for `{detected_step}` ({sel_cnt}/{tot_cnt} Columns Active):**\n\n"
+                    f"**Stage Analysis for `{detected_step}` ({sel_cnt}/{tot_cnt} Columns Active • {ds_meta['short_name']}):**\n\n"
+                    f"{ds_line}"
                     f"{delta_line}"
                     f"- **Active Subset Scope:** `{detected_step}` has **{sel_cnt}/{tot_cnt}** columns selected{desel_msg}.\n"
                     f"- **Variance Share Impact:** Accounts for **{step_info['variance_share_pct']}%** of yield variance in your active subset (compared to **{step_info['full_baseline_share_pct']}%** when all 20 `{detected_step}` columns are selected).\n"
@@ -581,7 +625,8 @@ class ProcessHypothesisMultiAgentApp:
                 top_c = candidates[0]
                 active_cat_count = sum(1 for c in selected_cols if cat in c)
                 chat_reply = (
-                    f"**Category Scan for `{cat}` ({active_cat_count}/20 `{cat}` Columns Active):**\n\n"
+                    f"**Category Scan for `{cat}` ({active_cat_count}/20 `{cat}` Columns Active • {ds_meta['short_name']}):**\n\n"
+                    f"{ds_line}"
                     f"{delta_line}"
                     f"{partial_step_line}"
                     f"- **#1 Active `{cat}` Signal:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
@@ -590,14 +635,14 @@ class ProcessHypothesisMultiAgentApp:
             else:
                 top_c = candidates[0]
                 chat_reply = (
-                    f"**Subset Analysis ({len(selected_cols)}/100 Active Columns):**\n\n"
+                    f"**Subset Analysis ({len(selected_cols)}/100 Active Columns • {ds_meta['short_name']}):**\n\n"
+                    f"{ds_line}"
                     f"{delta_line}"
                     f"{partial_step_line}"
                     f"- **#1 Active Driver:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
                     f"- **Active Step Breakdown:** {', '.join(step_pills[:3])}."
                 )
 
-            # Optional Live Gemini LLM synthesis grounded in exact subset telemetry
             if use_llm:
                 llm_prompt = (
                     "You are a concise semiconductor process engineering assistant. "
@@ -616,7 +661,8 @@ class ProcessHypothesisMultiAgentApp:
             top_c = candidates[0]
             backing_engine = "ADK Subset Partial-OLS Agent Engine"
             chat_reply = (
-                f"**Active Subset Scan ({len(selected_cols)}/100 Parameters × 100 Wafers):**\n\n"
+                f"**Active Subset Scan ({len(selected_cols)}/100 Parameters × 100 Wafers • {ds_meta['short_name']}):**\n\n"
+                f"{ds_line}"
                 f"{delta_line}"
                 f"{partial_step_line}"
                 f"- **#1 Active Signal:** `{top_c.get('short_title', top_c['title'])}` — **{top_c.get('confidence_hero', '99.9%')}** certainty, **{top_c.get('ceteris_paribus_hero', '')}**.\n"
@@ -627,6 +673,9 @@ class ProcessHypothesisMultiAgentApp:
             "status": "ok",
             "agent": "hypothesis_generator_agent",
             "agent_backing": backing_engine,
+            "dataset_id": active_ds,
+            "dataset_name": ds_meta["name"],
+            "dataset_short_name": ds_meta["short_name"],
             "active_columns_count": len(selected_cols),
             "added_columns_count": len(added_cols),
             "removed_columns_count": len(removed_cols),
@@ -648,7 +697,11 @@ class ProcessHypothesisMultiAgentApp:
             state=session["state"],
             author="hypothesis_generator_agent",
             role="model",
-            content={"chat_reply": clean_payload["chat_reply"], "num_candidates": len(candidates)},
+            content={
+                "dataset_id": active_ds,
+                "chat_reply": clean_payload["chat_reply"],
+                "num_candidates": len(candidates),
+            },
             compaction_config=self.compaction_config,
         )
         return clean_payload
@@ -668,11 +721,13 @@ class ProcessHypothesisMultiAgentApp:
             (c for c in candidates if c["hypothesis_id"] == hypothesis_id), None
         )
         if not target:
+            param_token = hypothesis_id.replace("HYP_SINGLE_", "").replace("HYP_STEP_", "")
             target = {
                 "hypothesis_id": hypothesis_id,
-                "hypothesis_type": "step_level" if hypothesis_id.replace("HYP_STEP_", "") in ("STEP_A", "STEP_B", "STEP_C", "STEP_D", "STEP_E") else "single_parameter",
-                "title": f"Hypothesis on {hypothesis_id}",
-                "parameters": [hypothesis_id.replace("HYP_SINGLE_", "").replace("HYP_STEP_", "")],
+                "hypothesis_type": "step_level" if param_token in ("STEP_A", "STEP_B", "STEP_C", "STEP_D", "STEP_E") else "single_parameter",
+                "short_title": param_token,
+                "title": f"Hypothesis on {param_token}",
+                "parameters": [param_token],
                 "rationale": "Queued by Subject-Matter Expert.",
             }
 
@@ -699,9 +754,39 @@ class ProcessHypothesisMultiAgentApp:
             "hypothesis_queue": queue,
         }
 
+    def clear_hypothesis_queue(
+        self,
+        clear_evaluated: bool = False,
+        session_id: str = "default_session",
+    ) -> Dict[str, Any]:
+        """Clear all items in `session.state['hypothesis_queue']` (and optionally evaluated results)."""
+        session = self.session_service.get_or_create_session(session_id=session_id)
+        cleared_count = len(session["state"].get("hypothesis_queue", []))
+        session["state"]["hypothesis_queue"] = []
+        session["state"]["current_hypothesis"] = None
+        if clear_evaluated:
+            session["state"]["evaluated_results"] = []
+            session["state"]["latest_evaluation"] = None
+
+        self.session_service.save_state_and_event(
+            session_id=session_id,
+            state=session["state"],
+            author="root_coordinator",
+            role="user",
+            content={"action": "clear_hypothesis_queue", "cleared_count": cleared_count},
+            compaction_config=self.compaction_config,
+        )
+        return {
+            "status": "cleared",
+            "cleared_count": cleared_count,
+            "hypothesis_queue": [],
+            "evaluated_results": session["state"].get("evaluated_results", []),
+        }
+
     def run_hypothesis_evaluator_agent_next(
         self,
         selected_columns: Optional[List[str]] = None,
+        dataset_id: Optional[str] = None,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
         """Agent 2 (`hypothesis_evaluator_agent`): Pops 1 hypothesis from queue and evaluates it on active subset."""
@@ -710,6 +795,8 @@ class ProcessHypothesisMultiAgentApp:
         if selected_columns:
             session["state"]["selected_columns"] = list(selected_columns)
         active_cols = session["state"].get("selected_columns") or None
+        active_ds = normalize_dataset_id(dataset_id or session["state"].get("dataset_id", "lot_alpha"))
+        session["state"]["dataset_id"] = active_ds
         queue: List[Dict[str, Any]] = session["state"].get("hypothesis_queue", [])
         evaluated: List[Dict[str, Any]] = session["state"].get("evaluated_results", [])
 
@@ -738,6 +825,7 @@ class ProcessHypothesisMultiAgentApp:
                 hypothesis=next_hyp,
                 selected_columns=active_cols,
                 data_dir=self.data_dir,
+                dataset_id=active_ds,
             )
 
         eval_bundle, _ = self.observability.trace_span(
@@ -745,7 +833,11 @@ class ProcessHypothesisMultiAgentApp:
             operation_name="agent:hypothesis_evaluator_agent.evaluate_single_hypothesis",
             actor="hypothesis_evaluator_agent",
             fn=_exec_eval,
-            attributes={"hypothesis_id": next_hyp["hypothesis_id"], "type": next_hyp.get("hypothesis_type")},
+            attributes={
+                "dataset_id": active_ds,
+                "hypothesis_id": next_hyp["hypothesis_id"],
+                "type": next_hyp.get("hypothesis_type"),
+            },
         )
 
         # `after_model_callback` (Pre-Response Hook): Sensitive-Data Classifier
@@ -764,7 +856,7 @@ class ProcessHypothesisMultiAgentApp:
 
         # Stage 4 of Context Engineering Loop: Async Background Memory Consolidation
         self.memory_bank.consolidate_memory_async(
-            fact=f"{clean_bundle['data']['title']} -> {clean_bundle['data']['verdict_badge']} (p={clean_bundle['data']['p_value']:.2e})",
+            fact=f"[{active_ds}] {clean_bundle['data']['title']} -> {clean_bundle['data']['verdict_badge']} (p={clean_bundle['data']['p_value']:.2e})",
             topic=next_hyp["hypothesis_id"],
             source_type="Analytics Discovery",
             importance=0.90 if clean_bundle["data"]["p_value"] < 0.01 else 0.50,
@@ -776,6 +868,7 @@ class ProcessHypothesisMultiAgentApp:
             author="hypothesis_evaluator_agent",
             role="model",
             content={
+                "dataset_id": active_ds,
                 "evaluated_hypothesis_id": next_hyp["hypothesis_id"],
                 "verdict_badge": clean_bundle["data"]["verdict_badge"],
             },
@@ -786,6 +879,7 @@ class ProcessHypothesisMultiAgentApp:
         return {
             "status": "evaluated",
             "agent": "hypothesis_evaluator_agent",
+            "dataset_id": active_ds,
             "evaluation": clean_bundle["data"],
             "ui": clean_bundle["ui"],
             "a2ui_stream": clean_bundle["a2ui_stream"],
@@ -797,3 +891,80 @@ class ProcessHypothesisMultiAgentApp:
             "redactions_applied": redactions,
             "trace_id": trace_id,
         }
+
+    def run_multi_model_feature_selection_agent(
+        self,
+        selected_columns: Optional[List[str]] = None,
+        top_k_cutoff: int = 5,
+        dataset_id: Optional[str] = None,
+        session_id: str = "default_session",
+    ) -> Dict[str, Any]:
+        """Screen 3 Agent: Runs 5 ML feature selection models across queued & candidate hypotheses."""
+        trace_id = f"trace_{uuid.uuid4().hex[:12]}"
+        session = self.session_service.get_or_create_session(session_id=session_id)
+        if selected_columns:
+            session["state"]["selected_columns"] = list(selected_columns)
+        active_cols = session["state"].get("selected_columns") or None
+        active_ds = normalize_dataset_id(dataset_id or session["state"].get("dataset_id", "lot_alpha"))
+        session["state"]["dataset_id"] = active_ds
+
+        queue: List[Dict[str, Any]] = list(session["state"].get("hypothesis_queue", []))
+        candidates: List[Dict[str, Any]] = list(session["state"].get("candidate_hypotheses", []))
+
+        # Combine queued hypotheses first, followed by candidate hypotheses from the current dataset
+        combined_hyps: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for q in queue:
+            if q["hypothesis_id"] not in seen_ids:
+                combined_hyps.append(q)
+                seen_ids.add(q["hypothesis_id"])
+
+        # Re-discover fresh candidates on `active_ds` if candidates are empty or from a different dataset
+        if not candidates or any(c.get("dataset_id") not in (None, active_ds) for c in candidates):
+            disc = discover_candidate_hypotheses(
+                selected_columns=active_cols,
+                top_k=8,
+                data_dir=self.data_dir,
+                dataset_id=active_ds,
+            )
+            candidates = disc["data"]["candidate_hypotheses"]
+            session["state"]["candidate_hypotheses"] = candidates
+
+        for c in candidates:
+            if c["hypothesis_id"] not in seen_ids:
+                combined_hyps.append(c)
+                seen_ids.add(c["hypothesis_id"])
+
+        def _exec_fs():
+            return run_multi_model_feature_selection(
+                hypotheses=combined_hyps,
+                selected_columns=active_cols,
+                top_k_cutoff=top_k_cutoff,
+                dataset_id=active_ds,
+                data_dir=self.data_dir,
+            )
+
+        fs_bundle, _ = self.observability.trace_span(
+            trace_id=trace_id,
+            operation_name="agent:feature_selection_agent.run_multi_model_feature_selection",
+            actor="feature_selection_agent",
+            fn=_exec_fs,
+            attributes={
+                "dataset_id": active_ds,
+                "hypotheses_count": len(combined_hyps),
+                "top_k_cutoff": top_k_cutoff,
+            },
+        )
+
+        clean_bundle, redactions = self.safety_plugin.check_output_pii(fs_bundle)
+        return {
+            "status": "ok",
+            "agent": "feature_selection_agent",
+            "dataset_id": active_ds,
+            "feature_selection": clean_bundle["data"],
+            "ui": clean_bundle["ui"],
+            "ui_available": True,
+            "redactions_applied": redactions,
+            "trace_id": trace_id,
+        }
+

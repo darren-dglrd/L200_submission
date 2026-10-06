@@ -62,6 +62,48 @@ CONFIDENTIAL_RECIPES = [
     "RECIPE-7712-TC-INTERNAL",
 ]
 
+# Catalog of 3 Selectable Semiconductor Process Datasets
+DATASET_CATALOG: Dict[str, Dict[str, Any]] = {
+    "lot_alpha": {
+        "dataset_id": "lot_alpha",
+        "name": "Dataset 1: Lot Alpha — Underfill Thermal & Pressure Drift",
+        "short_name": "1. Lot Alpha (STEP_A Thermal)",
+        "description": "100 wafers × 100 params. Primary excursion in STEP_A temperature & temp×pressure coupling.",
+        "seed": 42,
+        "raw_filename": "raw_wafers.csv",
+        "obf_filename": "obfuscated_wafers.csv",
+        "primary_stage": "STEP_A",
+    },
+    "lot_beta": {
+        "dataset_id": "lot_beta",
+        "name": "Dataset 2: Lot Beta — Plasma Etch RF Power & Flow Instability",
+        "short_name": "2. Lot Beta (STEP_B Plasma RF)",
+        "description": "100 wafers × 100 params. Primary excursion in STEP_B RF power arcing & gas flow×pressure.",
+        "seed": 108,
+        "raw_filename": "raw_wafers_lot_beta.csv",
+        "obf_filename": "obfuscated_wafers_lot_beta.csv",
+        "primary_stage": "STEP_B",
+    },
+    "lot_gamma": {
+        "dataset_id": "lot_gamma",
+        "name": "Dataset 3: Lot Gamma — Thermal Cure Dwell & Sputter Pressure",
+        "short_name": "3. Lot Gamma (STEP_C Dwell Time)",
+        "description": "100 wafers × 100 params. Primary excursion in STEP_C dwell duration & thermal cure budget.",
+        "seed": 256,
+        "raw_filename": "raw_wafers_lot_gamma.csv",
+        "obf_filename": "obfuscated_wafers_lot_gamma.csv",
+        "primary_stage": "STEP_C",
+    },
+}
+
+
+def normalize_dataset_id(dataset_id: Optional[str] = None) -> str:
+    """Validate and normalize dataset_id to one of the 3 supported datasets."""
+    if not dataset_id:
+        return "lot_alpha"
+    key = str(dataset_id).strip().lower()
+    return key if key in DATASET_CATALOG else "lot_alpha"
+
 
 def get_raw_parameter_names() -> List[str]:
     """Return 100 raw process parameter column names (5 steps x 5 categories x 4 sensors = 100)."""
@@ -83,26 +125,21 @@ def obfuscate_column_name(raw_col: str) -> str:
 
 def generate_wafer_dataset(
     num_wafers: int = 100,
-    seed: int = 42,
+    seed: Optional[int] = None,
     data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
     """Deterministically generate 100 unique wafers x 100 parameters = 10,000 parameter cells.
 
-    Plants three ground-truth process yield drivers for reproducible ML & statistical testing:
-      1. Main Effect #1: `UNDERFILL_LAMINATION_TEMPERATURE_01` (`STEP_A_TEMPERATURE_01`)
-         strongly reduces yield when high (optimal operating window < 0.55).
-      2. 2-Way Interaction #2: High `UNDERFILL_LAMINATION_TEMPERATURE_02` (`STEP_A_TEMPERATURE_02`)
-         combined with Low `UNDERFILL_LAMINATION_PRESSURE_01` (`STEP_A_PRESSURE_01`) causes
-         delamination / severe yield loss (-10.5% interaction penalty).
-      3. Main Effect #3: `PLASMA_ETCH_RF_POWER_01` (`STEP_B_RF_POWER_01`) positively improves
-         yield when above 0.45 (+4.2% gain).
-      4. Static / Step-Level Effect: Because Drivers #1 and #2 (plus minor `UNDERFILL_LAMINATION`
-         co-stress) reside in `UNDERFILL_LAMINATION` (`STEP_A`), `STEP_A` as a whole process stage
-         is the dominant bottleneck step across the line.
+    Supports 3 distinct fab lot datasets (`lot_alpha`, `lot_beta`, `lot_gamma`), each with
+    distinct ground-truth process yield drivers across different stages and physical sensors.
     """
+    ds_key = normalize_dataset_id(dataset_id)
+    ds_meta = DATASET_CATALOG[ds_key]
     target_dir = data_dir or DATA_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    rng = random.Random(seed)
+    actual_seed = seed if seed is not None else int(ds_meta["seed"])
+    rng = random.Random(actual_seed)
 
     raw_cols = get_raw_parameter_names()
     assert len(raw_cols) == 100, f"Expected 100 parameters, got {len(raw_cols)}"
@@ -120,33 +157,54 @@ def generate_wafer_dataset(
         for col in raw_cols:
             cat = next(c for c in PARAM_CATEGORIES if f"_{c}_" in col)
             low, high = RAW_RANGES[cat]
-            # Uniform/beta-like spread across [0, 1]
             u = rng.uniform(0.02, 0.98)
             norm_latent[col] = u
             row[col] = round(low + u * (high - low), 3)
 
-        # Compute realistic wafer yield (%) from planted causal drivers + minor noise
-        t1 = norm_latent["UNDERFILL_LAMINATION_TEMPERATURE_01"]
-        t2 = norm_latent["UNDERFILL_LAMINATION_TEMPERATURE_02"]
-        p1 = norm_latent["UNDERFILL_LAMINATION_PRESSURE_01"]
-        rf1 = norm_latent["PLASMA_ETCH_RF_POWER_01"]
-        step_a_aux = norm_latent["UNDERFILL_LAMINATION_DURATION_01"]
-
         base_yield = 93.5
-        # Driver 1: High STEP_A_TEMPERATURE_01 hurts yield sharply above 0.55
-        effect_t1 = -9.5 * t1 - (4.5 if t1 > 0.55 else 0.0)
-        # Driver 2: 2-Way Interaction (High STEP_A_TEMPERATURE_02 AND Low STEP_A_PRESSURE_01)
-        interaction_penalty = -11.0 * (t2 * (1.0 - p1)) - (4.0 if (t2 > 0.55 and p1 < 0.45) else 0.0)
-        # Driver 3: STEP_B_RF_POWER_01 positive effect
-        effect_rf1 = +4.8 * (rf1 - 0.5)
-        # Minor additional Step A contribution so STEP_A is clearly the #1 stage
-        effect_step_a_aux = -2.2 * (step_a_aux - 0.5)
         noise = rng.gauss(0.0, 1.15)
 
-        yield_pct = max(65.0, min(99.4, round(
-            base_yield + effect_t1 + interaction_penalty + effect_rf1 + effect_step_a_aux + noise,
-            2,
-        )))
+        if ds_key == "lot_beta":
+            # Dataset 2 (Lot Beta): STEP_B (PLASMA_ETCH) RF Power & Flow x Pressure Excursion
+            rf1 = norm_latent["PLASMA_ETCH_RF_POWER_01"]
+            fl2 = norm_latent["PLASMA_ETCH_FLOW_RATE_01"]
+            pr1 = norm_latent["PLASMA_ETCH_PRESSURE_01"]
+            dur_c = norm_latent["THERMAL_CURE_DURATION_01"]
+            step_b_aux = norm_latent["PLASMA_ETCH_TEMPERATURE_01"]
+
+            effect_main = -10.2 * rf1 - (4.8 if rf1 > 0.54 else 0.0)
+            interaction_penalty = -11.2 * (fl2 * (1.0 - pr1)) - (4.2 if (fl2 > 0.55 and pr1 < 0.45) else 0.0)
+            effect_sec = -5.0 * (dur_c - 0.5)
+            effect_aux = -2.4 * (step_b_aux - 0.5)
+            raw_y = base_yield + effect_main + interaction_penalty + effect_sec + effect_aux + noise
+        elif ds_key == "lot_gamma":
+            # Dataset 3 (Lot Gamma): STEP_C (THERMAL_CURE) Dwell Duration & Temp x Pressure Excursion
+            dur1 = norm_latent["THERMAL_CURE_DURATION_01"]
+            tc2 = norm_latent["THERMAL_CURE_TEMPERATURE_01"]
+            pc1 = norm_latent["THERMAL_CURE_PRESSURE_01"]
+            pd1 = norm_latent["SPUTTER_DEPOSITION_PRESSURE_01"]
+            step_c_aux = norm_latent["THERMAL_CURE_FLOW_RATE_01"]
+
+            effect_main = -10.5 * dur1 - (4.6 if dur1 > 0.54 else 0.0)
+            interaction_penalty = -11.0 * (tc2 * (1.0 - pc1)) - (4.0 if (tc2 > 0.55 and pc1 < 0.45) else 0.0)
+            effect_sec = +5.2 * (pd1 - 0.5)
+            effect_aux = -2.3 * (step_c_aux - 0.5)
+            raw_y = base_yield + effect_main + interaction_penalty + effect_sec + effect_aux + noise
+        else:
+            # Dataset 1 (Lot Alpha - Default): STEP_A (UNDERFILL_LAMINATION) Thermal & Pressure Excursion
+            t1 = norm_latent["UNDERFILL_LAMINATION_TEMPERATURE_01"]
+            t2 = norm_latent["UNDERFILL_LAMINATION_TEMPERATURE_02"]
+            p1 = norm_latent["UNDERFILL_LAMINATION_PRESSURE_01"]
+            rf1 = norm_latent["PLASMA_ETCH_RF_POWER_01"]
+            step_a_aux = norm_latent["UNDERFILL_LAMINATION_DURATION_01"]
+
+            effect_t1 = -9.5 * t1 - (4.5 if t1 > 0.55 else 0.0)
+            interaction_penalty = -11.0 * (t2 * (1.0 - p1)) - (4.0 if (t2 > 0.55 and p1 < 0.45) else 0.0)
+            effect_rf1 = +4.8 * (rf1 - 0.5)
+            effect_step_a_aux = -2.2 * (step_a_aux - 0.5)
+            raw_y = base_yield + effect_t1 + interaction_penalty + effect_rf1 + effect_step_a_aux + noise
+
+        yield_pct = max(65.0, min(99.4, round(raw_y, 2)))
         row["yield_pct"] = yield_pct
         raw_rows.append(row)
 
@@ -163,15 +221,16 @@ def generate_wafer_dataset(
             })
 
     # Write raw pivoted CSV (100 wafers x 100 parameters + wafer_id, RECIPE_ID, yield_pct)
-    raw_csv_path = target_dir / "raw_wafers.csv"
+    raw_csv_path = target_dir / ds_meta["raw_filename"]
     fieldnames = ["wafer_id", "RECIPE_ID"] + raw_cols + ["yield_pct"]
     with raw_csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(raw_rows)
 
-    # Write unpivoted event table CSV (10,000 parameter rows)
-    unpivoted_csv_path = target_dir / "unpivoted_wafer_events.csv"
+    # Write unpivoted event table CSV (10,000 parameter rows) for default lot_alpha or dataset-specific
+    unpiv_name = "unpivoted_wafer_events.csv" if ds_key == "lot_alpha" else f"unpivoted_wafer_events_{ds_key}.csv"
+    unpivoted_csv_path = target_dir / unpiv_name
     with unpivoted_csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -181,6 +240,8 @@ def generate_wafer_dataset(
         writer.writerows(unpivoted_events)
 
     return {
+        "dataset_id": ds_key,
+        "dataset_name": ds_meta["name"],
         "raw_csv_path": str(raw_csv_path),
         "unpivoted_csv_path": str(unpivoted_csv_path),
         "num_wafers": len(raw_rows),
@@ -193,12 +254,15 @@ def obfuscate_and_select_batches(
     batches: Optional[List[str]] = None,
     custom_columns: Optional[List[str]] = None,
     data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
     """Obfuscate confidential columns, normalize values to [0, 1], and filter by batch or hand-picked columns."""
+    ds_key = normalize_dataset_id(dataset_id)
+    ds_meta = DATASET_CATALOG[ds_key]
     target_dir = data_dir or DATA_DIR
-    raw_csv_path = target_dir / "raw_wafers.csv"
+    raw_csv_path = target_dir / ds_meta["raw_filename"]
     if not raw_csv_path.exists():
-        generate_wafer_dataset(data_dir=target_dir)
+        generate_wafer_dataset(data_dir=target_dir, dataset_id=ds_key)
 
     with raw_csv_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -227,7 +291,7 @@ def obfuscate_and_select_batches(
         obf_row["yield_pct"] = float(r["yield_pct"])
         obf_rows.append(obf_row)
 
-    obf_csv_path = target_dir / "obfuscated_wafers.csv"
+    obf_csv_path = target_dir / ds_meta["obf_filename"]
     obf_fieldnames = ["wafer_id"] + all_obf_cols + ["yield_pct"]
     with obf_csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=obf_fieldnames)
@@ -281,8 +345,24 @@ def obfuscate_and_select_batches(
         for row in obf_rows
     ]
 
+    available_datasets = [
+        {
+            "dataset_id": k,
+            "name": v["name"],
+            "short_name": v["short_name"],
+            "description": v["description"],
+            "primary_stage": v["primary_stage"],
+        }
+        for k, v in DATASET_CATALOG.items()
+    ]
+
     result = {
         "status": "success",
+        "dataset_id": ds_key,
+        "dataset_name": ds_meta["name"],
+        "dataset_short_name": ds_meta["short_name"],
+        "dataset_description": ds_meta["description"],
+        "available_datasets": available_datasets,
         "obfuscated_csv_path": str(obf_csv_path),
         "num_wafers": len(obf_rows),
         "total_parameters": len(all_obf_cols),

@@ -26,9 +26,13 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import random
+
 from skills.data_preprocess.scripts.preprocess import (
     DATA_DIR,
+    DATASET_CATALOG,
     STEP_OBFUSCATION_MAP,
+    normalize_dataset_id,
     obfuscate_and_select_batches,
     obfuscate_column_name,
 )
@@ -50,11 +54,16 @@ A2UI_V09_BASIC_CATALOG = frozenset({
 GOOD_WAFER_YIELD_THRESHOLD = 83.5  # Wafers >= 83.5% are GOOD (Green); < 83.5% are BAD (Red)
 
 
-def _load_obfuscated_rows(data_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+def _load_obfuscated_rows(
+    data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
+) -> List[Dict[str, Any]]:
+    ds_key = normalize_dataset_id(dataset_id)
+    ds_meta = DATASET_CATALOG[ds_key]
     target_dir = data_dir or DATA_DIR
-    obf_path = target_dir / "obfuscated_wafers.csv"
+    obf_path = target_dir / ds_meta["obf_filename"]
     if not obf_path.exists():
-        obfuscate_and_select_batches(batches=["ALL"], data_dir=target_dir)
+        obfuscate_and_select_batches(batches=["ALL"], data_dir=target_dir, dataset_id=ds_key)
     with obf_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = []
@@ -689,9 +698,11 @@ def discover_candidate_hypotheses(
     user_query: str = "",
     top_k: int = 8,
     data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
-    """Scan strictly the user's `selected_columns` to generate dynamic candidate hypotheses."""
-    rows = _load_obfuscated_rows(data_dir=data_dir)
+    """Scan strictly the user's `selected_columns` on `dataset_id` to generate dynamic candidate hypotheses."""
+    ds_key = normalize_dataset_id(dataset_id)
+    rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
     all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not cols:
@@ -794,6 +805,7 @@ def discover_candidate_hypotheses(
         cand["everyday_analogy"] = analogy
         cand["caveats_and_confounders"] = caveats
         cand["estimated_yield_swing_pct"] = round(abs(high_m - low_m), 1)
+        cand["dataset_id"] = ds_key
         return cand
 
     candidates: List[Dict[str, Any]] = []
@@ -973,6 +985,8 @@ def discover_candidate_hypotheses(
 
     return {
         "data": {
+            "dataset_id": ds_key,
+            "dataset_name": DATASET_CATALOG[ds_key]["name"],
             "scanned_columns_count": len(cols),
             "selected_columns": cols,
             "candidate_hypotheses": candidates,
@@ -987,13 +1001,15 @@ def evaluate_single_hypothesis(
     hypothesis: Dict[str, Any],
     selected_columns: Optional[List[str]] = None,
     data_dir: Optional[Path] = None,
+    dataset_id: str = "lot_alpha",
 ) -> Dict[str, Any]:
     """Evaluate a single hypothesis using statistical p-values (with FDR) + ML importance.
 
-    Respects `selected_columns` so step-level evaluations and partial ceteris paribus slopes
-    dynamically reflect the engineer's active parameter subset.
+    Respects `selected_columns` and `dataset_id` so step-level evaluations and partial
+    ceteris paribus slopes dynamically reflect the engineer's active dataset and subset.
     """
-    rows = _load_obfuscated_rows(data_dir=data_dir)
+    ds_key = normalize_dataset_id(dataset_id)
+    rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
     all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
     active_cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not active_cols:
@@ -1236,6 +1252,7 @@ def evaluate_single_hypothesis(
         "plain_english_summary": summary,
         "good_bad_wafer_split": good_bad_split,
         "recommended_action": action,
+        "dataset_id": ds_key,
         "active_columns_count": len(active_cols),
         "distribution_chart": dist,
     }
@@ -1251,4 +1268,588 @@ def evaluate_single_hypothesis(
         ],
         "ui_available": True,
     }
+
+
+# ============================================================================
+# 5. Multi-Model Feature Selection & Cross-Model Consistency Engine (Screen 3)
+# ============================================================================
+
+ML_MODEL_SPECS: List[Dict[str, str]] = [
+    {
+        "model_id": "L1_LASSO",
+        "model_name": "L1 Lasso Sparse Linear",
+        "short_name": "L1 Lasso",
+        "family": "Sparse Penalized Linear (L1 Coordinate Descent)",
+    },
+    {
+        "model_id": "RANDOM_FOREST",
+        "model_name": "Random Forest Impurity",
+        "short_name": "Random Forest",
+        "family": "Bagged Decision Tree Ensemble (24 Trees)",
+    },
+    {
+        "model_id": "GRADIENT_BOOSTING",
+        "model_name": "Gradient Boosted Trees",
+        "short_name": "Grad. Boost",
+        "family": "Additive Stagewise Boosted Trees",
+    },
+    {
+        "model_id": "PERMUTATION_RIDGE",
+        "model_name": "Permutation Importance",
+        "short_name": "Permutation",
+        "family": "Out-of-Sample Shuffle Drop in R² (L2 Ridge)",
+    },
+    {
+        "model_id": "MUTUAL_INFO_RANK",
+        "model_name": "Mutual Info + Spearman",
+        "short_name": "Mutual Info",
+        "family": "Non-Parametric Shannon Entropy & Rank Order",
+    },
+]
+
+
+def _standardize_vector(vec: List[float]) -> List[float]:
+    n = len(vec)
+    if n < 2:
+        return [0.0 for _ in vec]
+    m = sum(vec) / n
+    sd = math.sqrt(sum((v - m) ** 2 for v in vec) / n)
+    if sd < 1e-12:
+        return [0.0 for _ in vec]
+    return [(v - m) / sd for v in vec]
+
+
+def _compute_5_ml_model_scores(
+    feature_vectors: Dict[str, List[float]],
+    ys: List[float],
+) -> Dict[str, Dict[str, float]]:
+    """Run 5 distinct ML feature-selection algorithms across `feature_vectors` -> `ys`.
+
+    Returns `{model_id: {feature_name: normalized_importance_0_to_100}}`.
+    """
+    n = len(ys)
+    feat_names = list(feature_vectors.keys())
+    if not feat_names or n < 4:
+        return {m["model_id"]: {f: 0.0 for f in feat_names} for m in ML_MODEL_SPECS}
+
+    z_y = _standardize_vector(ys)
+    z_x: Dict[str, List[float]] = {f: _standardize_vector(feature_vectors[f]) for f in feat_names}
+
+    # Precompute marginal Pearson |r| and tree stump gain for fast warm-starting
+    abs_r: Dict[str, float] = {}
+    stump_gain: Dict[str, float] = {}
+    for f in feat_names:
+        r_f, _, _ = _pearson_r_and_p(feature_vectors[f], ys)
+        abs_r[f] = abs(r_f)
+        _, _, _, g_f = _tree_stump_importance(feature_vectors[f], ys)
+        stump_gain[f] = g_f
+
+    ordered_feats = sorted(feat_names, key=lambda f: -abs_r[f])
+
+    # ------------------------------------------------------------------------
+    # Model 1: L1 Lasso Coordinate Descent (Soft-Thresholding, lambda=0.075)
+    # ------------------------------------------------------------------------
+    betas_lasso: Dict[str, float] = {f: 0.0 for f in feat_names}
+    res_lasso = list(z_y)
+    l1_lambda = 0.075
+    for _ in range(10):
+        for f in ordered_feats:
+            zx = z_x[f]
+            old_b = betas_lasso[f]
+            rho = old_b + (sum(zx[i] * res_lasso[i] for i in range(n)) / n)
+            if rho > l1_lambda:
+                new_b = rho - l1_lambda
+            elif rho < -l1_lambda:
+                new_b = rho + l1_lambda
+            else:
+                new_b = 0.0
+            diff = new_b - old_b
+            if abs(diff) > 1e-9:
+                for i in range(n):
+                    res_lasso[i] -= diff * zx[i]
+                betas_lasso[f] = new_b
+    raw_lasso = {f: abs(betas_lasso[f]) + 0.12 * abs_r[f] for f in feat_names}
+
+    # ------------------------------------------------------------------------
+    # Model 2: Random Forest Impurity Importance (24 Bootstrap Depth-2 Trees)
+    # ------------------------------------------------------------------------
+    rf_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
+    rng_rf = random.Random(42)
+    m_try = max(6, int(math.sqrt(len(feat_names))) + 2)
+    for t_idx in range(24):
+        boot_indices = [rng_rf.randrange(n) for _ in range(n)]
+        sub_feats = rng_rf.sample(feat_names, min(len(feat_names), m_try))
+        # Ensure top candidates are sampled regularly alongside random subspace
+        for top_f in ordered_feats[:4]:
+            if top_f not in sub_feats and (t_idx % 2 == 0):
+                sub_feats.append(top_f)
+
+        best_root_f = sub_feats[0]
+        best_root_gain = -1.0
+        best_root_thresh = 0.5
+        by = [ys[i] for i in boot_indices]
+        mean_by = sum(by) / n
+        tot_var = sum((v - mean_by) ** 2 for v in by) / n + 1e-9
+
+        for f in sub_feats:
+            bx = [feature_vectors[f][i] for i in boot_indices]
+            th, _, _, gain = _tree_stump_importance(bx, by)
+            if gain > best_root_gain:
+                best_root_gain = gain
+                best_root_f = f
+                best_root_thresh = th
+
+        rf_scores[best_root_f] += max(0.0, best_root_gain) * 1.35
+
+        # Depth-2 child splits
+        left_idx = [i for i in boot_indices if feature_vectors[best_root_f][i] <= best_root_thresh]
+        right_idx = [i for i in boot_indices if feature_vectors[best_root_f][i] > best_root_thresh]
+        for child_idx in (left_idx, right_idx):
+            if len(child_idx) >= 16:
+                cy = [ys[i] for i in child_idx]
+                best_cf = sub_feats[0]
+                best_cgain = -1.0
+                for f in sub_feats:
+                    cx = [feature_vectors[f][i] for i in child_idx]
+                    _, _, _, cgain = _tree_stump_importance(cx, cy)
+                    if cgain > best_cgain:
+                        best_cgain = cgain
+                        best_cf = f
+                rf_scores[best_cf] += max(0.0, best_cgain) * (len(child_idx) / n) * 0.65
+
+    for f in feat_names:
+        rf_scores[f] += 0.25 * stump_gain[f]
+
+    # ------------------------------------------------------------------------
+    # Model 3: Gradient Boosted Decision Trees (16 Additive Stages, lr=0.18)
+    # ------------------------------------------------------------------------
+    gb_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
+    mean_y = sum(ys) / n
+    residuals = [y - mean_y for y in ys]
+    lr = 0.18
+    for stage in range(16):
+        stage_gains: List[Tuple[float, str, float, float, float]] = []
+        for f in feat_names:
+            xs_f = feature_vectors[f]
+            th, low_m, high_m, gain = _tree_stump_importance(xs_f, residuals)
+            stage_gains.append((gain, f, th, low_m, high_m))
+        stage_gains.sort(key=lambda x: -x[0])
+        win_gain, win_f, win_th, win_low, win_high = stage_gains[0]
+        decay = math.pow(0.90, stage)
+        gb_scores[win_f] += win_gain * decay
+        # Credit close runner-up splits in this boosting round
+        for runner_gain, runner_f, _, _, _ in stage_gains[1:4]:
+            gb_scores[runner_f] += runner_gain * 0.30 * decay
+        xs_win = feature_vectors[win_f]
+        for i in range(n):
+            pred = win_low if xs_win[i] <= win_th else win_high
+            residuals[i] -= lr * pred
+
+    # ------------------------------------------------------------------------
+    # Model 4: Permutation Importance on L2 Ridge Predictor
+    # ------------------------------------------------------------------------
+    betas_ridge: Dict[str, float] = {f: 0.0 for f in feat_names}
+    res_ridge = list(z_y)
+    l2_penalty = 0.30
+    for _ in range(8):
+        for f in ordered_feats:
+            zx = z_x[f]
+            old_b = betas_ridge[f]
+            grad = sum(zx[i] * res_ridge[i] for i in range(n)) / n
+            new_b = (old_b + grad) / (1.0 + l2_penalty)
+            diff = new_b - old_b
+            if abs(diff) > 1e-9:
+                for i in range(n):
+                    res_ridge[i] -= diff * zx[i]
+                betas_ridge[f] = new_b
+
+    base_mse = sum(r * r for r in res_ridge) / n
+    perm_scores: Dict[str, float] = {}
+    for idx_f, f in enumerate(feat_names):
+        rng_p = random.Random(200 + idx_f)
+        zx = z_x[f]
+        shuffled_zx = list(zx)
+        rng_p.shuffle(shuffled_zx)
+        b_f = betas_ridge[f]
+        perm_mse = 0.0
+        for i in range(n):
+            # Replacing zx[i] with shuffled_zx[i] shifts residual by b_f * (zx[i] - shuffled_zx[i])
+            r_perm = res_ridge[i] + b_f * (zx[i] - shuffled_zx[i])
+            perm_mse += r_perm * r_perm
+        perm_mse /= n
+        delta_mse = max(0.0, perm_mse - base_mse)
+        perm_scores[f] = delta_mse + 0.10 * (abs_r[f] ** 2)
+
+    # ------------------------------------------------------------------------
+    # Model 5: Non-Parametric Mutual Information + Spearman Rank Selector
+    # ------------------------------------------------------------------------
+    mi_scores: Dict[str, float] = {}
+    # Rank transform y
+    y_order = sorted(range(n), key=lambda i: ys[i])
+    y_ranks = [0.0] * n
+    for r_pos, orig_i in enumerate(y_order):
+        y_ranks[orig_i] = float(r_pos)
+    y_tertiles = [min(2, int((r_pos * 3) / n)) for r_pos in y_ranks]
+
+    for f in feat_names:
+        xf = feature_vectors[f]
+        x_order = sorted(range(n), key=lambda i: xf[i])
+        x_ranks = [0.0] * n
+        for r_pos, orig_i in enumerate(x_order):
+            x_ranks[orig_i] = float(r_pos)
+        spearman_r, _, _ = _pearson_r_and_p(x_ranks, y_ranks)
+
+        # 3x3 quantile Mutual Information I(X; Y)
+        counts_xy = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+        counts_x = [0, 0, 0]
+        counts_y = [0, 0, 0]
+        for i in range(n):
+            bx = min(2, int((x_ranks[i] * 3) / n))
+            by_bin = y_tertiles[i]
+            counts_xy[bx][by_bin] += 1
+            counts_x[bx] += 1
+            counts_y[by_bin] += 1
+
+        mi_val = 0.0
+        for bx in range(3):
+            for by_bin in range(3):
+                c_xy = counts_xy[bx][by_bin]
+                if c_xy > 0 and counts_x[bx] > 0 and counts_y[by_bin] > 0:
+                    p_xy = c_xy / n
+                    p_x = counts_x[bx] / n
+                    p_y = counts_y[by_bin] / n
+                    mi_val += p_xy * math.log(p_xy / (p_x * p_y) + 1e-12)
+
+        mi_scores[f] = 0.55 * abs(spearman_r) + 0.45 * max(0.0, mi_val)
+
+    raw_by_model = {
+        "L1_LASSO": raw_lasso,
+        "RANDOM_FOREST": rf_scores,
+        "GRADIENT_BOOSTING": gb_scores,
+        "PERMUTATION_RIDGE": perm_scores,
+        "MUTUAL_INFO_RANK": mi_scores,
+    }
+
+    # Normalize each model's importance scores to [0.0, 100.0]
+    norm_by_model: Dict[str, Dict[str, float]] = {}
+    for m_id, m_dict in raw_by_model.items():
+        max_v = max(m_dict.values()) if m_dict else 1.0
+        if max_v < 1e-12:
+            max_v = 1.0
+        norm_by_model[m_id] = {
+            f: round(100.0 * (val / max_v), 1) for f, val in m_dict.items()
+        }
+    return norm_by_model
+
+
+def build_feature_selection_a2ui(
+    hypothesis_results: List[Dict[str, Any]],
+    top_k_cutoff: int = 5,
+) -> Dict[str, Any]:
+    """Build A2UI v0.9 updateComponents payload for Screen 3 Multi-Model Feature Selection."""
+    card_ids: List[str] = []
+    components: List[Dict[str, Any]] = []
+
+    for idx, h in enumerate(hypothesis_results, start=1):
+        cid = f"fs_card_{idx}"
+        col_id = f"fs_col_{idx}"
+        title_id = f"fs_title_{idx}"
+        summary_id = f"fs_summary_{idx}"
+        card_ids.append(cid)
+        components.extend([
+            {"id": cid, "component": "Card", "child": col_id},
+            {"id": col_id, "component": "Column", "children": [title_id, summary_id]},
+            {
+                "id": title_id,
+                "component": "Text",
+                "text": f"{h['short_title']} — {h['consistency_hero']} Models in Top-{top_k_cutoff}",
+                "variant": "h3",
+            },
+            {
+                "id": summary_id,
+                "component": "Text",
+                "text": h["plain_english_takeaway"],
+            },
+        ])
+
+    full_components = [
+        {"id": "root", "component": "Column", "children": ["fs_header"] + card_ids},
+        {
+            "id": "fs_header",
+            "component": "Text",
+            "text": f"Multi-Model Feature Selection Consistency (Top-{top_k_cutoff} Threshold)",
+            "variant": "h2",
+        },
+    ] + components
+
+    msg = {
+        "version": "v0.9",
+        "updateComponents": {
+            "surfaceId": "feature_selection_surface",
+            "components": full_components,
+        },
+    }
+    validate_a2ui_v09_payload(msg)
+    return msg
+
+
+def run_multi_model_feature_selection(
+    hypotheses: Optional[List[Dict[str, Any]]] = None,
+    selected_columns: Optional[List[str]] = None,
+    top_k_cutoff: int = 5,
+    dataset_id: str = "lot_alpha",
+    data_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Evaluate hypotheses and active parameters across 5 ML feature selection models.
+
+    Checks whether each hypothesis's feature(s) consistently rank in the Top-K features
+    across L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge, and Mutual Info.
+    """
+    ds_key = normalize_dataset_id(dataset_id)
+    ds_meta = DATASET_CATALOG[ds_key]
+    rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
+    all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
+    cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
+    if not cols:
+        cols = all_param_cols
+
+    ys = [r["yield_pct"] for r in rows]
+    cutoff = max(3, min(15, int(top_k_cutoff or 5)))
+
+    # If no hypotheses passed, discover candidate hypotheses on active subset + dataset
+    if not hypotheses:
+        disc = discover_candidate_hypotheses(
+            selected_columns=cols,
+            top_k=8,
+            data_dir=data_dir,
+            dataset_id=ds_key,
+        )
+        hypotheses = disc["data"]["candidate_hypotheses"]
+
+    # 1. Build base feature vectors for all active columns
+    base_vectors: Dict[str, List[float]] = {c: [r[c] for r in rows] for c in cols}
+    base_model_scores = _compute_5_ml_model_scores(base_vectors, ys)
+
+    # Compute 1-indexed ranks for all active columns per model
+    base_model_ranks: Dict[str, Dict[str, int]] = {}
+    for m_spec in ML_MODEL_SPECS:
+        m_id = m_spec["model_id"]
+        sorted_cols = sorted(cols, key=lambda c: -base_model_scores[m_id].get(c, 0.0))
+        base_model_ranks[m_id] = {c: rk for rk, c in enumerate(sorted_cols, start=1)}
+
+    # 2. Build Global Top Features Leaderboard across the 5 ML models
+    global_features: List[Dict[str, Any]] = []
+    for c in cols:
+        per_m = []
+        in_top_count = 0
+        ranks_list = []
+        scores_list = []
+        for m_spec in ML_MODEL_SPECS:
+            m_id = m_spec["model_id"]
+            rk = base_model_ranks[m_id][c]
+            sc = base_model_scores[m_id][c]
+            is_top = rk <= cutoff
+            if is_top:
+                in_top_count += 1
+            ranks_list.append(rk)
+            scores_list.append(sc)
+            per_m.append({
+                "model_id": m_id,
+                "short_name": m_spec["short_name"],
+                "rank": rk,
+                "in_top_k": is_top,
+                "importance_pct": sc,
+            })
+        mean_rk = round(sum(ranks_list) / len(ranks_list), 1)
+        mean_sc = round(sum(scores_list) / len(scores_list), 1)
+        global_features.append({
+            "column": c,
+            "short_name": _format_short_param(c),
+            "hypothesis_id": f"HYP_SINGLE_{c}",
+            "models_in_top_k": in_top_count,
+            "total_models": len(ML_MODEL_SPECS),
+            "consistency_hero": f"{in_top_count} / {len(ML_MODEL_SPECS)}",
+            "consistency_pct": int(round(100.0 * in_top_count / len(ML_MODEL_SPECS))),
+            "mean_rank": mean_rk,
+            "mean_importance_pct": mean_sc,
+            "per_model_ranks": per_m,
+        })
+
+    global_features.sort(key=lambda x: (-x["models_in_top_k"], x["mean_rank"], -x["mean_importance_pct"]))
+
+    # 3. Evaluate each hypothesis across all 5 ML models
+    hypothesis_consistency: List[Dict[str, Any]] = []
+    for hyp in hypotheses:
+        h_id = hyp.get("hypothesis_id", "HYP_CUSTOM")
+        h_type = hyp.get("hypothesis_type", "single_parameter")
+        params = [obfuscate_column_name(p.upper()) for p in hyp.get("parameters", [])]
+        short_title = hyp.get("short_title") or hyp.get("title") or h_id
+        title = hyp.get("title") or short_title
+
+        if len(params) == 1 and params[0] in STEP_OBFUSCATION_MAP.values():
+            h_type = "step_level"
+
+        if h_type == "single_parameter" and params and params[0] in base_vectors:
+            target_col = params[0]
+            h_scores = {m["model_id"]: base_model_scores[m["model_id"]][target_col] for m in ML_MODEL_SPECS}
+            h_ranks = {m["model_id"]: base_model_ranks[m["model_id"]][target_col] for m in ML_MODEL_SPECS}
+        else:
+            # Construct synthetic feature vector for 2-way interaction, step composite, or deselected single col
+            synth_key = f"__HYP_{h_id}"
+            if h_type == "two_way_interaction" and len(params) >= 2:
+                c1 = params[0] if params[0] in all_param_cols else cols[0]
+                c2 = params[1] if params[1] in all_param_cols else cols[min(1, len(cols) - 1)]
+                mode = hyp.get("interaction_mode", "HIGH_LOW")
+                synth_vec = [
+                    (r[c1] * (1.0 - r[c2])) if mode == "HIGH_LOW" else (r[c1] * r[c2])
+                    for r in rows
+                ]
+            elif h_type == "step_level":
+                step_name = params[0] if params else "STEP_A"
+                step_cols = [c for c in cols if c.startswith(step_name + "_")]
+                if not step_cols:
+                    step_cols = [c for c in all_param_cols if c.startswith(step_name + "_")]
+                s_corrs = sorted(
+                    [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in step_cols],
+                    key=lambda item: -abs(item[1]),
+                )
+                synth_vec = []
+                for r in rows:
+                    sv = sum((r[c] if rc < 0 else (1.0 - r[c])) for c, rc in s_corrs[:3])
+                    synth_vec.append(sv / max(1, len(s_corrs[:3])))
+            else:
+                c_single = params[0] if (params and params[0] in all_param_cols) else cols[0]
+                synth_vec = [r[c_single] for r in rows]
+
+            aug_vectors = dict(base_vectors)
+            aug_vectors[synth_key] = synth_vec
+            aug_scores = _compute_5_ml_model_scores(aug_vectors, ys)
+            h_scores = {}
+            h_ranks = {}
+            for m_spec in ML_MODEL_SPECS:
+                m_id = m_spec["model_id"]
+                sorted_aug = sorted(aug_vectors.keys(), key=lambda k: -aug_scores[m_id].get(k, 0.0))
+                h_ranks[m_id] = sorted_aug.index(synth_key) + 1
+                h_scores[m_id] = aug_scores[m_id][synth_key]
+
+        per_model_breakdown: List[Dict[str, Any]] = []
+        in_top_k_count = 0
+        rk_vals = []
+        sc_vals = []
+
+        for m_spec in ML_MODEL_SPECS:
+            m_id = m_spec["model_id"]
+            rk = h_ranks[m_id]
+            sc = h_scores[m_id]
+            is_top = rk <= cutoff
+            if is_top:
+                in_top_k_count += 1
+            rk_vals.append(rk)
+            sc_vals.append(sc)
+            per_model_breakdown.append({
+                "model_id": m_id,
+                "model_name": m_spec["model_name"],
+                "short_name": m_spec["short_name"],
+                "family": m_spec["family"],
+                "rank": rk,
+                "in_top_k": is_top,
+                "importance_pct": sc,
+                "badge_text": f"✓ #{rk}" if is_top else f"✗ #{rk}",
+            })
+
+        total_m = len(ML_MODEL_SPECS)
+        cons_pct = int(round(100.0 * in_top_k_count / total_m))
+        mean_rk = round(sum(rk_vals) / total_m, 1)
+        mean_imp = round(sum(sc_vals) / total_m, 1)
+
+        if in_top_k_count >= 4:
+            verdict_label = "CONSISTENT TOP FEATURE"
+            color = "emerald"
+            takeaway = (
+                f"Appears in Top-{cutoff} features across {in_top_k_count}/{total_m} ML models "
+                f"(Avg Rank #{mean_rk:.1f}) — robust across linear, tree ensemble, and non-parametric selectors."
+            )
+        elif in_top_k_count >= 2:
+            verdict_label = "PARTIAL MODEL AGREEMENT"
+            color = "amber"
+            takeaway = (
+                f"Appears in Top-{cutoff} for {in_top_k_count}/{total_m} ML models "
+                f"(Avg Rank #{mean_rk:.1f}) — model-dependent signal; check for non-linear or collinear coupling."
+            )
+        else:
+            verdict_label = "NOT IN TOP FEATURES"
+            color = "rose"
+            takeaway = (
+                f"Appears in Top-{cutoff} for {in_top_k_count}/{total_m} ML models "
+                f"(Avg Rank #{mean_rk:.1f}) — consistently ranked outside top drivers across ML families."
+            )
+
+        hypothesis_consistency.append({
+            "hypothesis_id": h_id,
+            "hypothesis_type": h_type,
+            "short_title": short_title,
+            "title": title,
+            "parameters": params,
+            "queue_status": hyp.get("queue_status", "CANDIDATE"),
+            "models_in_top_k": in_top_k_count,
+            "total_models": total_m,
+            "consistency_pct": cons_pct,
+            "consistency_hero": f"{in_top_k_count} / {total_m}",
+            "consistency_label": f"{cons_pct}% Model Consensus (Top-{cutoff})",
+            "mean_rank": mean_rk,
+            "mean_rank_hero": f"#{mean_rk:.1f}",
+            "mean_importance_pct": mean_imp,
+            "consistency_verdict": verdict_label,
+            "confidence_color": color,
+            "per_model_breakdown": per_model_breakdown,
+            "plain_english_takeaway": takeaway,
+        })
+
+    consistent_hyps = [h for h in hypothesis_consistency if h["models_in_top_k"] >= 4]
+    top_global = global_features[0] if global_features else {
+        "column": "STEP_A_TEMPERATURE_01",
+        "consistency_hero": "5 / 5",
+        "mean_rank": 1.0,
+    }
+
+    # Compute cross-model Top-K Jaccard/overlap concordance among the 5 models
+    top_sets = [
+        {c for c, rk in base_model_ranks[m["model_id"]].items() if rk <= cutoff}
+        for m in ML_MODEL_SPECS
+    ]
+    pair_overlaps = []
+    for i in range(len(top_sets)):
+        for j in range(i + 1, len(top_sets)):
+            s1, s2 = top_sets[i], top_sets[j]
+            pair_overlaps.append(len(s1 & s2) / max(1, cutoff))
+    concordance_pct = int(round(100.0 * (sum(pair_overlaps) / max(1, len(pair_overlaps)))))
+
+    summary_kpis = {
+        "consistent_hypotheses_hero": f"{len(consistent_hyps)} / {len(hypothesis_consistency)}",
+        "consistent_hypotheses_label": f"Confirmed in Top-{cutoff} by ≥4/5 ML Models",
+        "top_consensus_hero": top_global["consistency_hero"],
+        "top_consensus_param": top_global["column"],
+        "top_consensus_rank": f"Avg Rank #{top_global['mean_rank']:.1f}",
+        "ensemble_agreement_hero": f"{concordance_pct}%",
+        "ensemble_agreement_label": f"Cross-Model Top-{cutoff} Feature Concordance",
+    }
+
+    a2ui_msg = build_feature_selection_a2ui(hypothesis_consistency, top_k_cutoff=cutoff)
+
+    return {
+        "data": {
+            "dataset_id": ds_key,
+            "dataset_name": ds_meta["name"],
+            "dataset_short_name": ds_meta["short_name"],
+            "active_columns_count": len(cols),
+            "top_k_cutoff": cutoff,
+            "models_metadata": ML_MODEL_SPECS,
+            "summary_kpis": summary_kpis,
+            "hypothesis_consistency": hypothesis_consistency,
+            "global_top_features": global_features[:12],
+        },
+        "ui": a2ui_msg,
+        "ui_available": True,
+    }
+
 

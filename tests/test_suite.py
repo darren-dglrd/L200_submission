@@ -486,7 +486,68 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             self.assertIn("%", cand["confidence_hero"])
             self.assertIn("/", cand["ceteris_paribus_hero"])
 
+    def test_09_clear_queue_three_datasets_and_multi_model_feature_selection(self) -> None:
+        """Verify Clear Queue, switching across 3 datasets (lot_alpha, lot_beta, lot_gamma), and 5-Model Feature Selection."""
+        app = ProcessHypothesisMultiAgentApp(
+            db_path=self.base_path / "screen3_test.db",
+            data_dir=self.data_dir,
+        )
+
+        # 1. Verify all 3 datasets are available and produce distinct dominant stages & top drivers
+        expected_by_dataset = {
+            "lot_alpha": ("STEP_A_TEMPERATURE_01", "STEP_A"),
+            "lot_beta": ("STEP_B_RF_POWER_01", "STEP_B"),
+            "lot_gamma": ("STEP_C_DURATION_01", "STEP_C"),
+        }
+        for ds_id, (expected_top_col, expected_top_step) in expected_by_dataset.items():
+            pre = app.preprocess_dataset(batches=["ALL"], dataset_id=ds_id, session_id=f"sess_{ds_id}")
+            self.assertEqual(pre["dataset_id"], ds_id)
+            self.assertEqual(len(pre["available_datasets"]), 3)
+
+            gen = app.run_hypothesis_generator_agent(
+                user_message="",
+                dataset_id=ds_id,
+                session_id=f"sess_{ds_id}",
+            )
+            self.assertEqual(gen["dataset_id"], ds_id)
+            top_cand = gen["candidate_hypotheses"][0]
+            self.assertIn(expected_top_col, top_cand["parameters"])
+            self.assertEqual(gen["step_attribution"][0]["step"], expected_top_step)
+
+            # Enqueue top 2 hypotheses and test Clear Queue
+            app.enqueue_hypothesis(top_cand["hypothesis_id"], session_id=f"sess_{ds_id}")
+            q_res = app.enqueue_hypothesis(gen["candidate_hypotheses"][1]["hypothesis_id"], session_id=f"sess_{ds_id}")
+            self.assertEqual(len(q_res["hypothesis_queue"]), 2)
+
+            # Run 5-Model Feature Selection on this dataset
+            fs_res = app.run_multi_model_feature_selection_agent(
+                top_k_cutoff=5,
+                dataset_id=ds_id,
+                session_id=f"sess_{ds_id}",
+            )
+            self.assertEqual(fs_res["status"], "ok")
+            self.assertTrue(validate_a2ui_v09_payload(fs_res["ui"]))
+            fs_data = fs_res["feature_selection"]
+            self.assertEqual(fs_data["dataset_id"], ds_id)
+            self.assertEqual(len(fs_data["models_metadata"]), 5)
+
+            # Verify the #1 planted driver appears in Top-5 across >= 4/5 ML models
+            top_hyp_fs = next(
+                h for h in fs_data["hypothesis_consistency"]
+                if expected_top_col in h["parameters"] and h["hypothesis_type"] == "single_parameter"
+            )
+            self.assertGreaterEqual(top_hyp_fs["models_in_top_k"], 4)
+            self.assertEqual(top_hyp_fs["consistency_verdict"], "CONSISTENT TOP FEATURE")
+            self.assertEqual(len(top_hyp_fs["per_model_breakdown"]), 5)
+
+            # Verify Clear Queue empties the queue
+            clr = app.clear_hypothesis_queue(clear_evaluated=True, session_id=f"sess_{ds_id}")
+            self.assertEqual(clr["status"], "cleared")
+            self.assertEqual(clr["cleared_count"], 2)
+            self.assertEqual(len(clr["hypothesis_queue"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

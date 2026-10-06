@@ -114,12 +114,16 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length > 0 else {}
         session_id = body.get("session_id", "default_session")
+        dataset_id = body.get("dataset_id")
 
         if self.path == "/api/preprocess":
             batches = body.get("batches", ["ALL"])
             custom_cols = body.get("custom_columns")
             res = GLOBAL_APP.preprocess_dataset(
-                batches=batches, custom_columns=custom_cols, session_id=session_id
+                batches=batches,
+                custom_columns=custom_cols,
+                dataset_id=dataset_id,
+                session_id=session_id,
             )
             self._send_json(res)
             return
@@ -131,6 +135,7 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
             res = GLOBAL_APP.run_hypothesis_generator_agent(
                 user_message=msg,
                 selected_columns=sel_cols,
+                dataset_id=dataset_id,
                 use_llm=use_llm,
                 session_id=session_id,
             )
@@ -146,10 +151,32 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(res)
             return
 
+        if self.path == "/api/queue/clear":
+            clear_eval = bool(body.get("clear_evaluated", False))
+            res = GLOBAL_APP.clear_hypothesis_queue(
+                clear_evaluated=clear_eval, session_id=session_id
+            )
+            self._send_json(res)
+            return
+
         if self.path == "/api/queue/evaluate_next":
             sel_cols = body.get("selected_columns")
             res = GLOBAL_APP.run_hypothesis_evaluator_agent_next(
-                selected_columns=sel_cols, session_id=session_id
+                selected_columns=sel_cols,
+                dataset_id=dataset_id,
+                session_id=session_id,
+            )
+            self._send_json(res)
+            return
+
+        if self.path == "/api/feature_selection":
+            sel_cols = body.get("selected_columns")
+            top_k = int(body.get("top_k_cutoff", 5))
+            res = GLOBAL_APP.run_multi_model_feature_selection_agent(
+                selected_columns=sel_cols,
+                top_k_cutoff=top_k,
+                dataset_id=dataset_id,
+                session_id=session_id,
             )
             self._send_json(res)
             return
