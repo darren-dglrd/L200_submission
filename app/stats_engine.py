@@ -355,40 +355,48 @@ def build_evaluation_a2ui(eval_result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _confidence_metadata(p_val: float) -> Dict[str, Any]:
-    """Translate p-value into color-coded SME statistical certainty metadata."""
+    """Translate p-value into color-coded SME statistical certainty metadata + Hero KPI string."""
     if p_val < 0.0005:
         return {
             "confidence_pct": 99.9,
+            "confidence_hero": "99.9%",
+            "confidence_label": "Confirmed Driver",
             "confidence_tier": "HIGH",
             "confidence_color": "emerald",
-            "confidence_badge": "99.9% Statistical Certainty • Confirmed Driver",
-            "confidence_plain": "99.9% Statistical Certainty (Less than a 1-in-1,000 chance this is a random fluke)",
+            "confidence_badge": "99.9% Certainty • Confirmed Driver",
+            "confidence_plain": "99.9% Statistical Certainty (<1-in-1,000 fluke risk)",
         }
     if p_val < 0.01:
-        pct = round(max(99.0, (1.0 - p_val) * 100.0), 1)
+        pct = round(max(95.0, (1.0 - p_val) * 100.0), 1)
         return {
             "confidence_pct": pct,
+            "confidence_hero": f"{pct:.1f}%",
+            "confidence_label": "Confirmed Driver",
             "confidence_tier": "HIGH",
             "confidence_color": "emerald",
-            "confidence_badge": f"{pct}% Statistical Certainty • Strong Signal",
-            "confidence_plain": f"{pct}% Statistical Certainty (Less than a 1-in-100 chance this is random luck)",
+            "confidence_badge": f"{pct:.1f}% Certainty • Strong Signal",
+            "confidence_plain": f"{pct:.1f}% Statistical Certainty (<1-in-100 fluke risk)",
         }
-    if p_val < 0.05:
-        pct = round((1.0 - p_val) * 100.0, 1)
+    if p_val < 0.15:
+        pct = round(max(80.0, (1.0 - p_val) * 100.0), 1)
         return {
             "confidence_pct": pct,
+            "confidence_hero": f"{pct:.0f}%",
+            "confidence_label": "Moderate Signal",
             "confidence_tier": "MODERATE",
             "confidence_color": "amber",
-            "confidence_badge": f"{pct}% Statistical Certainty • Moderate Signal (Monitor)",
-            "confidence_plain": f"{pct}% Statistical Certainty (Promising trend, but collect 20-30 more wafers to rule out false alarms)",
+            "confidence_badge": f"{pct:.0f}% Certainty • Moderate (Monitor)",
+            "confidence_plain": f"{pct:.0f}% Statistical Certainty (Moderate trend — monitor next 30 wafers)",
         }
-    pct = round(max(5.0, min(65.0, (1.0 - p_val) * 100.0)), 0)
+    pct = round(max(5.0, min(75.0, (1.0 - p_val) * 100.0)), 0)
     return {
         "confidence_pct": pct,
+        "confidence_hero": f"{pct:.0f}%",
+        "confidence_label": "Random Noise",
         "confidence_tier": "LOW",
         "confidence_color": "rose",
-        "confidence_badge": f"{pct:.0f}% Statistical Certainty • Random Noise (Rule Out)",
-        "confidence_plain": f"Low Statistical Certainty ({pct:.0f}%) — Pattern is indistinguishable from random background variation",
+        "confidence_badge": f"{pct:.0f}% Certainty • Random Noise",
+        "confidence_plain": f"{pct:.0f}% Statistical Certainty — Indistinguishable from background noise",
     }
 
 
@@ -406,6 +414,60 @@ def _compute_linear_slope(xs: List[float], ys: List[float]) -> float:
     return num / den
 
 
+def _compute_partial_slope(
+    rows: List[Dict[str, Any]],
+    xs: List[float],
+    ys: List[float],
+    control_cols: List[str],
+) -> float:
+    """Compute multivariable Ceteris Paribus partial OLS slope holding active control_cols constant.
+
+    Uses Frisch-Waugh-Lovell orthogonalization so that selecting/deselecting columns in the UI
+    genuinely updates the ceteris paribus partial effect.
+    """
+    n = len(xs)
+    if n < 5 or not control_cols:
+        return _compute_linear_slope(xs, ys)
+
+    # Center target x and y
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    rx = [x - mx for x in xs]
+    ry = [y - my for y in ys]
+
+    # Orthogonalize against up to 6 active control columns (Gram-Schmidt)
+    basis: List[List[float]] = []
+    for c in control_cols[:6]:
+        raw_z = [r[c] for r in rows]
+        mz = sum(raw_z) / n
+        z = [v - mz for v in raw_z]
+        for b in basis:
+            proj = sum(zi * bi for zi, bi in zip(z, b))
+            z = [zi - proj * bi for zi, bi in zip(z, b)]
+        norm_z = math.sqrt(sum(zi * zi for zi in z))
+        if norm_z > 1e-9:
+            u = [zi / norm_z for zi in z]
+            basis.append(u)
+            px = sum(xi * ui for xi, ui in zip(rx, u))
+            py = sum(yi * ui for yi, ui in zip(ry, u))
+            rx = [xi - px * ui for xi, ui in zip(rx, u)]
+            ry = [yi - py * ui for yi, ui in zip(ry, u)]
+
+    den = sum(xi * xi for xi in rx)
+    if den < 1e-12:
+        return _compute_linear_slope(xs, ys)
+    return sum(xi * yi for xi, yi in zip(rx, ry)) / den
+
+
+def _format_short_param(col: str) -> str:
+    return (
+        col.replace("TEMPERATURE", "TEMP")
+        .replace("PRESSURE", "PRESS")
+        .replace("FLOW_RATE", "FLOW")
+        .replace("DURATION", "DUR")
+    )
+
+
 def _build_ceteris_paribus_and_analogy(
     h_type: str,
     params: List[str],
@@ -415,142 +477,211 @@ def _build_ceteris_paribus_and_analogy(
     thresh: float,
     is_sig: bool,
     step_share_pct: float = 0.0,
-) -> Tuple[str, str]:
-    """Generate a plain-English ceteris paribus rule-of-thumb and everyday physical analogy."""
+    active_controls_count: int = 99,
+    step_selected_info: str = "",
+) -> Tuple[str, str, str, str]:
+    """Return (ceteris_hero, ceteris_short, ceteris_paribus, everyday_analogy)."""
+    sign_str = lambda v: f"{v:+.2f}%"
+    hold_label = f"Holding {active_controls_count} active cols constant"
+
     if h_type == "step_level":
         step_name = params[0] if params else "STEP_A"
-        per_10pct = abs(slope_norm) * 0.10
+        delta_10pct = slope_norm * 0.10
+        hero = f"{sign_str(delta_10pct)} / +10% Stress"
+        short_sub = f"{step_share_pct:.1f}% of active yield variance {step_selected_info}".strip()
         ceteris = (
-            f"For every +10% increase in overall {step_name} off-spec stress, final wafer yield drops by "
-            f"{per_10pct:.2f}%, ceteris paribus (holding all other process stages constant). "
-            f"{step_name} alone drives {step_share_pct:.1f}% of all yield variation across the entire 5-step line."
+            f"{hero} ({short_sub}): For every +10% increase in {step_name} composite stress, "
+            f"wafer yield shifts by {delta_10pct:+.2f}%, ceteris paribus."
         )
         analogy = (
-            f"Think of the 5 manufacturing steps like a 5-stage water filtration system: "
-            f"{'over half' if step_share_pct >= 45 else f'{step_share_pct:.1f}%'} of all yield loss enters at "
-            f"{step_name} ({low_m:.1f}% yield when {step_name} is calm vs. {high_m:.1f}% when stressed). "
-            f"Fine-tuning downstream stages won't prevent Bad (Red) wafers until {step_name} is stabilized."
+            f"5-stage water filter: {step_share_pct:.1f}% of active yield variation enters at "
+            f"{step_name} ({low_m:.1f}% calm → {high_m:.1f}% stressed)."
         )
-        return ceteris, analogy
+        return hero, short_sub, ceteris, analogy
 
     if h_type == "two_way_interaction" and len(params) >= 2:
         c1, c2 = params[0], params[1]
-        per_10pct = abs(slope_norm) * 0.10
-        # Physical translation for temperature x pressure
-        per_deg_c = abs(slope_norm) / 120.0
+        delta_10pct = slope_norm * 0.10
+        hero = f"{sign_str(delta_10pct)} / +10% Joint"
+        short_sub = f"High {_format_short_param(c1)} × Low {_format_short_param(c2)}"
         ceteris = (
-            f"When {c2} drops into the low-pressure zone (< 0.45), every +1°C increase in {c1} "
-            f"(+0.83% on the normalized knob) reduces wafer yield by {per_deg_c:.2f}% "
-            f"({per_10pct:.2f}% yield loss per +10% interaction exposure), ceteris paribus."
+            f"{hero}: When {c2} < 0.45, each +10% rise in joint exposure with {c1} shifts "
+            f"wafer yield by {delta_10pct:+.2f}%, ceteris paribus ({hold_label})."
         )
         analogy = (
-            f"Like applying a heated laminate or iron-on patch: high heat ({c1}) is safe as long as firm "
-            f"clamping pressure ({c2}) holds the layer flat ({low_m:.1f}% yield, mostly Green wafers). "
-            f"But combining high heat with weak clamping pressure lets micro-voids blister open, crashing "
-            f"yield to {high_m:.1f}% (mostly Red wafers)."
+            f"Heated lamination press: high heat ({_format_short_param(c1)}) + weak pressure "
+            f"({_format_short_param(c2)}) blisters the layer ({low_m:.1f}% → {high_m:.1f}% yield)."
         )
-        return ceteris, analogy
+        return hero, short_sub, ceteris, analogy
 
     col = params[0] if params else "STEP_A_TEMPERATURE_01"
-    direction_word = "drops" if slope_norm < 0 else "increases"
-    per_10pct = abs(slope_norm) * 0.10
-
     if "TEMPERATURE" in col:
-        # Raw temperature span is 140C..260C (120 degrees C)
-        per_1_deg = abs(slope_norm) / 120.0
-        per_10_deg = per_1_deg * 10.0
+        # Raw span 140..260°C = 120°C -> per +10°C
+        delta_10c = (slope_norm / 120.0) * 10.0
+        per_1c = slope_norm / 120.0
+        hero = f"{sign_str(delta_10c)} / +10°C"
+        short_sub = f"{per_1c:+.2f}% per +1°C • {hold_label}"
         ceteris = (
-            f"For every +1°C increase in {col} during {col[:6]} (or +10°C shift), final wafer yield "
-            f"{direction_word} by {per_1_deg:.2f}% per °C ({per_10_deg:.2f}% per 10°C / {per_10pct:.2f}% per +10% knob step), "
-            f"ceteris paribus (all other 99 machine settings held constant)."
+            f"{hero} ({per_1c:+.2f}% / +1°C): Holding {active_controls_count} other active parameters "
+            f"constant, each +10°C increase in {col} shifts yield by {delta_10c:+.2f}%, ceteris paribus."
         )
         analogy = (
-            f"Like baking temperature in an oven: keeping {col} below the {thresh:.2f} mark cures the wafer "
-            f"cleanly ({low_m:.1f}% average yield, mostly Green wafers), whereas pushing heat above {thresh:.2f} "
-            f"over-bakes the film and drops yield to {high_m:.1f}% (mostly Red wafers)."
+            f"Oven cure threshold: ≤ {thresh:.2f} cures cleanly ({low_m:.1f}% yield); "
+            f"> {thresh:.2f} over-bakes film ({high_m:.1f}% yield)."
             if is_sig
-            else f"Like a room thermostat that is already well inside its comfort zone: nudging {col} up or down changes yield by only {per_1_deg:.3f}% per °C ({low_m:.1f}% vs {high_m:.1f}%), which is indistinguishable from random background ripple."
+            else f"Thermostat inside safe band: {low_m:.1f}% vs {high_m:.1f}% yield across range."
         )
-    elif "PRESSURE" in col:
-        # Raw pressure span is 1.5..9.5 Bar (8.0 Bar)
-        per_1_bar = abs(slope_norm) / 8.0
+    elif "DURATION" in col:
+        # Raw span 15..120s = 105s -> per +10s (e.g. -0.41% / +10s)
+        delta_10s = (slope_norm / 105.0) * 10.0
+        hero = f"{sign_str(delta_10s)} / +10s"
+        short_sub = f"Dwell time shift • {hold_label}"
         ceteris = (
-            f"For every +1 Bar increase in {col} during {col[:6]}, final wafer yield {direction_word} by "
-            f"{per_1_bar:.2f}% ({per_10pct:.2f}% per +10% knob step), ceteris paribus."
+            f"{hero}: Holding {active_controls_count} other active parameters constant, "
+            f"each +10s increase in {col} dwell time shifts yield by {delta_10s:+.2f}%, ceteris paribus."
         )
-        analogy = (
-            f"Like clamping pressure when gluing two surfaces: insufficient pressure leaves gaps, while "
-            f"staying in the optimal pressure window shifts yield from {low_m:.1f}% to {high_m:.1f}%."
-        )
+        analogy = f"Chamber dwell timer: {low_m:.1f}% yield when short vs {high_m:.1f}% when long (split @ {thresh:.2f})."
     elif "RF_POWER" in col:
-        # Raw RF power span is 250..950 W (700 W)
-        per_50w = (abs(slope_norm) / 700.0) * 50.0
+        # Raw span 250..950W = 700W -> per +50W
+        delta_50w = (slope_norm / 700.0) * 50.0
+        hero = f"{sign_str(delta_50w)} / +50W"
+        short_sub = f"Plasma power shift • {hold_label}"
         ceteris = (
-            f"For every +50 Watts increase in {col} during {col[:6]}, final wafer yield {direction_word} by "
-            f"{per_50w:.2f}% ({per_10pct:.2f}% per +10% knob step), ceteris paribus."
+            f"{hero}: Holding {active_controls_count} other active parameters constant, "
+            f"each +50W change in {col} shifts yield by {delta_50w:+.2f}%, ceteris paribus."
         )
-        analogy = (
-            f"Like plasma cleaning power: running {col} above {thresh:.2f} thoroughly clears surface residue "
-            f"({high_m:.1f}% average yield, mostly Green wafers), whereas under-powering below {thresh:.2f} "
-            f"leaves incomplete etch and lowers yield to {low_m:.1f}%."
-        )
-    elif "FLOW_RATE" in col:
-        per_10sccm = (abs(slope_norm) / 160.0) * 10.0
+        analogy = f"Plasma etch power: > {thresh:.2f} clears residue ({high_m:.1f}% vs {low_m:.1f}% yield)."
+    elif "PRESSURE" in col:
+        # Raw span 1.5..9.5 Bar = 8.0 Bar -> per +1 Bar
+        delta_1bar = slope_norm / 8.0
+        hero = f"{sign_str(delta_1bar)} / +1 Bar"
+        short_sub = f"Chamber pressure shift • {hold_label}"
         ceteris = (
-            f"For every +10 sccm change in gas flow ({col}), wafer yield {direction_word} by "
-            f"{per_10sccm:.2f}% ({per_10pct:.2f}% per +10% knob step), ceteris paribus."
+            f"{hero}: Holding {active_controls_count} other active parameters constant, "
+            f"each +1 Bar increase in {col} shifts yield by {delta_1bar:+.2f}%, ceteris paribus."
         )
-        analogy = f"Gas flow acts like ventilation airflow across the chamber ({low_m:.1f}% yield when low vs. {high_m:.1f}% when high)."
+        analogy = f"Clamping pressure window: {low_m:.1f}% yield below {thresh:.2f} vs {high_m:.1f}% above."
     else:
-        per_10sec = (abs(slope_norm) / 105.0) * 10.0
+        # FLOW_RATE: Raw span 20..180 sccm = 160 sccm -> per +10 sccm
+        delta_10sccm = (slope_norm / 160.0) * 10.0
+        hero = f"{sign_str(delta_10sccm)} / +10 sccm"
+        short_sub = f"Gas flow shift • {hold_label}"
         ceteris = (
-            f"For every +10 seconds of process duration ({col}), wafer yield {direction_word} by "
-            f"{per_10sec:.2f}% ({per_10pct:.2f}% per +10% knob step), ceteris paribus."
+            f"{hero}: Holding {active_controls_count} other active parameters constant, "
+            f"each +10 sccm change in {col} shifts yield by {delta_10sccm:+.2f}%, ceteris paribus."
         )
-        analogy = f"Process dwell time determines how long the wafer sits in {col[:6]} ({low_m:.1f}% yield when short vs. {high_m:.1f}% when long)."
+        analogy = f"Chamber gas flow: {low_m:.1f}% yield when low vs {high_m:.1f}% when high."
 
-    return ceteris, analogy
+    return hero, short_sub, ceteris, analogy
 
 
 def _build_confounder_caveats(
     rows: List[Dict[str, Any]],
     all_param_cols: List[str],
+    active_cols: List[str],
     params: List[str],
     h_type: str,
 ) -> List[str]:
-    """Build 3 plain-English caveats warning the SME about multi-interaction confounders."""
+    """Build 3 concise, subset-aware caveats warning the SME about multi-interaction confounders."""
     primary_col = params[0] if (params and params[0] in all_param_cols) else "STEP_A_TEMPERATURE_01"
     xs = [r[primary_col] for r in rows]
 
-    # Find highest co-moving parameter in the dataset (collinearity / confounder check)
     best_corr_col = "STEP_A_PRESSURE_01"
     best_corr_val = 0.0
-    for c in all_param_cols:
+    for c in active_cols:
         if c not in params:
             r_c, _, _ = _pearson_r_and_p(xs, [r[c] for r in rows])
             if abs(r_c) > abs(best_corr_val):
                 best_corr_val = r_c
                 best_corr_col = c
 
-    caveats = [
-        (
-            "Multi-Interaction Confounder (Heat × Pressure Coupling): In STEP_A, high temperature "
-            "(STEP_A_TEMPERATURE_02 > 0.55) interacts non-linearly with low pressure (STEP_A_PRESSURE_01 < 0.45). "
-            "Adjusting one knob without interlocking its partner can still trigger Bad (Red) wafer excursions."
-        ),
-        (
-            f"Cross-Stage Masking (Ceteris Paribus Limit): Downstream parameter STEP_B_RF_POWER_01 independently "
-            f"shifts yield by ~0.35% per +50W. If STEP_B drifts low on the same lot, or if co-moving sensor "
-            f"{best_corr_col} (empirical co-movement r = {best_corr_val:+.2f}) shifts simultaneously, single-knob "
-            f"estimates can be partially confounded."
-        ),
-        (
-            "Observational vs. Controlled Split-Lot Caveat: These estimates come from 100 historical production "
-            "wafers (10,000 measurements). Before permanently locking factory spec limits, validate with a 10-wafer "
-            "controlled A/B split lot holding all other steps fixed."
-        ),
+    # Check if any known key causal driver was deselected by the user!
+    key_drivers = ["STEP_A_TEMPERATURE_01", "STEP_A_TEMPERATURE_02", "STEP_A_PRESSURE_01", "STEP_B_RF_POWER_01"]
+    omitted_drivers = [d for d in key_drivers if d not in active_cols and d not in params]
+
+    if omitted_drivers:
+        omitted_warning = (
+            f"Omitted Variable Alert: Key driver {', '.join(omitted_drivers[:2])} is DESELECTED "
+            f"from your active subset ({len(active_cols)}/100 cols), which shifts partial ceteris paribus slopes."
+        )
+    else:
+        omitted_warning = (
+            f"Cross-Step Co-Movement: Active sensor {best_corr_col} (r = {best_corr_val:+.2f}) "
+            f"and STEP_B_RF_POWER_01 (+0.35% / +50W) must stay stable to isolate this effect."
+        )
+
+    return [
+        "Non-Linear Coupling: High STEP_A_TEMPERATURE_02 (>0.55) × Low STEP_A_PRESSURE_01 (<0.45) interacts to trigger Bad wafers.",
+        omitted_warning,
+        "Split-Lot Check: Observational estimate across 100 wafers; verify with a 10-wafer A/B split lot before locking specs.",
     ]
-    return caveats
+
+
+def _compute_step_breakdown(
+    rows: List[Dict[str, Any]],
+    ys: List[float],
+    all_param_cols: List[str],
+    active_cols: List[str],
+) -> List[Dict[str, Any]]:
+    """Compute step-level metrics strictly scoped to `active_cols` vs. 100-col baseline."""
+    step_scores: List[Dict[str, Any]] = []
+    for _, obf_step in STEP_OBFUSCATION_MAP.items():
+        all_step_cols = [c for c in all_param_cols if c.startswith(obf_step + "_")]
+        sel_step_cols = [c for c in active_cols if c.startswith(obf_step + "_")]
+        desel_step_cols = [c for c in all_step_cols if c not in sel_step_cols]
+
+        full_r2 = sum((_pearson_r_and_p([r[c] for r in rows], ys)[0] ** 2) for c in all_step_cols)
+        if sel_step_cols:
+            corrs = [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in sel_step_cols]
+            corrs.sort(key=lambda item: -abs(item[1]))
+            active_r2 = sum(rv * rv for _, rv in corrs)
+            top_knobs = [c for c, _ in corrs[:3]]
+
+            # Compute composite step stress strictly from selected columns in this step
+            raw_stress = []
+            for r in rows:
+                s_val = 0.0
+                for c, r_c in corrs[:3]:
+                    s_val += r[c] if r_c < 0 else (1.0 - r[c])
+                raw_stress.append(s_val / max(1, len(corrs[:3])))
+            s_min, s_max = min(raw_stress), max(raw_stress)
+            norm_stress = [(v - s_min) / max(1e-9, s_max - s_min) for v in raw_stress]
+            r_step, t_step, p_step = _pearson_r_and_p(norm_stress, ys)
+            thresh_s, low_s, high_s, gain_s = _tree_stump_importance(norm_stress, ys)
+            slope_s = _compute_linear_slope(norm_stress, ys)
+        else:
+            active_r2 = 0.0
+            top_knobs = []
+            r_step, t_step, p_step = 0.0, 0.0, 0.95
+            thresh_s, low_s, high_s, gain_s = 0.50, 82.8, 82.8, 0.0
+            slope_s = 0.0
+
+        step_scores.append({
+            "step": obf_step,
+            "raw_R2_sum": active_r2,
+            "full_R2_sum": full_r2,
+            "selected_col_count": len(sel_step_cols),
+            "total_col_count": len(all_step_cols),
+            "deselected_cols": desel_step_cols,
+            "top_parameters": top_knobs,
+            "r": r_step,
+            "t_stat": t_step,
+            "p_value": p_step,
+            "split_threshold": thresh_s,
+            "low_mean_yield": low_s,
+            "high_mean_yield": high_s,
+            "ml_importance": gain_s,
+            "slope": slope_s,
+        })
+
+    total_active_r2 = sum(s["raw_R2_sum"] for s in step_scores) or 1.0
+    total_full_r2 = sum(s["full_R2_sum"] for s in step_scores) or 1.0
+    for s in step_scores:
+        s["variance_share_pct"] = round(100.0 * s["raw_R2_sum"] / total_active_r2, 1) if s["selected_col_count"] > 0 else 0.0
+        s["full_baseline_share_pct"] = round(100.0 * s["full_R2_sum"] / total_full_r2, 1)
+
+    step_scores.sort(key=lambda s: (-s["variance_share_pct"], -s["selected_col_count"]))
+    return step_scores
 
 
 def discover_candidate_hypotheses(
@@ -559,14 +690,7 @@ def discover_candidate_hypotheses(
     top_k: int = 8,
     data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Scan selected obfuscated columns (and process steps) to generate candidate hypotheses.
-
-    Supports:
-      1. Whole-Step / Static Feature Importance (e.g., `STEP_A` as a bottleneck stage)
-      2. Single-Parameter Main Effects (e.g., `STEP_A_TEMPERATURE_01`)
-      3. 2-Way Parameter Interactions (e.g., `STEP_A_TEMPERATURE_02 x STEP_A_PRESSURE_01`)
-      4. User-Suggested Domain Hypotheses & Baseline Noise Controls (no 4-item queue cap)
-    """
+    """Scan strictly the user's `selected_columns` to generate dynamic candidate hypotheses."""
     rows = _load_obfuscated_rows(data_dir=data_dir)
     all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
@@ -575,13 +699,21 @@ def discover_candidate_hypotheses(
 
     ys = [r["yield_pct"] for r in rows]
 
-    # 1. Scan all 1-way main effects across selected columns
+    # First pass correlations to identify top active control columns for partial OLS
+    prelim_corrs = sorted(
+        [(c, abs(_pearson_r_and_p([r[c] for r in rows], ys)[0])) for c in cols],
+        key=lambda x: -x[1],
+    )
+    top_active_controls = [c for c, _ in prelim_corrs[:6]]
+
+    # 1. Scan all 1-way main effects across selected columns (with partial ceteris paribus slope)
     single_stats = []
     for col in cols:
         xs = [r[col] for r in rows]
         r_val, t_stat, p_val = _pearson_r_and_p(xs, ys)
         thresh, low_m, high_m, ml_gain = _tree_stump_importance(xs, ys)
-        slope = _compute_linear_slope(xs, ys)
+        ctrl = [c for c in top_active_controls if c != col]
+        partial_slope = _compute_partial_slope(rows, xs, ys, ctrl)
         single_stats.append({
             "column": col,
             "r": r_val,
@@ -591,18 +723,18 @@ def discover_candidate_hypotheses(
             "split_threshold": thresh,
             "low_mean_yield": low_m,
             "high_mean_yield": high_m,
-            "slope": slope,
+            "slope": partial_slope,
         })
 
     single_stats.sort(key=lambda d: (d["p_value"], -abs(d["r"])))
 
-    # 2. Scan 2-way interactions among top candidate columns
+    # 2. Scan 2-way interactions strictly among selected columns
     top_cand_cols = [d["column"] for d in single_stats[:12]]
     interactions_found: List[Dict[str, Any]] = []
     for i in range(len(top_cand_cols)):
         for j in range(i + 1, len(top_cand_cols)):
             c1, c2 = top_cand_cols[i], top_cand_cols[j]
-            if c1 == single_stats[0]["column"]:
+            if len(top_cand_cols) > 2 and c1 == single_stats[0]["column"]:
                 continue
             for mode, fn in [
                 ("HIGH_LOW", lambda r, a=c1, b=c2: r[a] * (1.0 - r[b])),
@@ -626,21 +758,23 @@ def discover_candidate_hypotheses(
     interactions_found.sort(key=lambda d: (d["p_value"], -abs(d["r"])))
     best_interaction = interactions_found[0] if interactions_found else None
 
-    # 3. Compute Step-Level (Static Stage) Variance Attribution across STEP_A..STEP_E
-    step_scores: List[Dict[str, Any]] = []
-    for raw_step, obf_step in STEP_OBFUSCATION_MAP.items():
-        step_cols = [c for c in all_param_cols if c.startswith(obf_step + "_")]
-        step_r2 = sum((_pearson_r_and_p([r[c] for r in rows], ys)[0] ** 2) for c in step_cols)
-        step_scores.append({"step": obf_step, "raw_R2_sum": step_r2})
-    total_r2 = sum(s["raw_R2_sum"] for s in step_scores) or 1.0
-    for s in step_scores:
-        s["variance_share_pct"] = round(100.0 * s["raw_R2_sum"] / total_r2, 1)
-    step_scores.sort(key=lambda s: -s["variance_share_pct"])
-    top_step = step_scores[0]
+    # 3. Compute Step-Level Variance Attribution strictly across `cols` (active selected columns)
+    step_scores = _compute_step_breakdown(rows, ys, all_param_cols, cols)
+    active_steps = [s for s in step_scores if s["selected_col_count"] > 0]
+    top_step = active_steps[0] if active_steps else step_scores[0]
 
-    def _enrich_candidate(cand: Dict[str, Any], p_val: float, slope: float, low_m: float, high_m: float, thresh: float, share_pct: float = 0.0) -> Dict[str, Any]:
+    def _enrich_candidate(
+        cand: Dict[str, Any],
+        p_val: float,
+        slope: float,
+        low_m: float,
+        high_m: float,
+        thresh: float,
+        share_pct: float = 0.0,
+        step_selected_info: str = "",
+    ) -> Dict[str, Any]:
         conf = _confidence_metadata(p_val)
-        ceteris, analogy = _build_ceteris_paribus_and_analogy(
+        c_hero, c_short, ceteris, analogy = _build_ceteris_paribus_and_analogy(
             h_type=cand["hypothesis_type"],
             params=cand["parameters"],
             slope_norm=slope,
@@ -649,9 +783,13 @@ def discover_candidate_hypotheses(
             thresh=thresh,
             is_sig=(p_val < 0.01),
             step_share_pct=share_pct,
+            active_controls_count=max(0, len(cols) - len(cand["parameters"])),
+            step_selected_info=step_selected_info,
         )
-        caveats = _build_confounder_caveats(rows, all_param_cols, cand["parameters"], cand["hypothesis_type"])
+        caveats = _build_confounder_caveats(rows, all_param_cols, cols, cand["parameters"], cand["hypothesis_type"])
         cand.update(conf)
+        cand["ceteris_paribus_hero"] = c_hero
+        cand["ceteris_paribus_short"] = c_short
         cand["ceteris_paribus"] = ceteris
         cand["everyday_analogy"] = analogy
         cand["caveats_and_confounders"] = caveats
@@ -665,19 +803,20 @@ def discover_candidate_hypotheses(
         if raw_step in normalized_query:
             normalized_query = normalized_query.replace(raw_step, obf_step)
 
-    # Candidate 1: Top Single-Parameter Main Effect
+    # Candidate 1: Top Single-Parameter Main Effect in active selection
     top_1 = single_stats[0]
+    arrow_1 = "↑" if top_1["r"] < 0 else "↓"
     direction = "High" if top_1["r"] < 0 else "Low"
     candidates.append(_enrich_candidate(
         {
             "hypothesis_id": f"HYP_SINGLE_{top_1['column']}",
             "hypothesis_type": "single_parameter",
+            "short_title": f"{top_1['column']} {arrow_1}",
             "title": f"{direction} {top_1['column']} causes wafer yield loss",
             "parameters": [top_1["column"]],
             "rationale": (
-                f"Wafers running with low {top_1['column']} averaged {top_1['low_mean_yield']:.1f}% yield, "
-                f"while high settings dropped to {top_1['high_mean_yield']:.1f}% yield "
-                f"({abs(top_1['low_mean_yield'] - top_1['high_mean_yield']):.1f}% yield swing)."
+                f"Low setting averages {top_1['low_mean_yield']:.1f}% yield vs. "
+                f"{top_1['high_mean_yield']:.1f}% at high setting."
             ),
         },
         p_val=top_1["p_value"],
@@ -687,7 +826,7 @@ def discover_candidate_hypotheses(
         thresh=top_1["split_threshold"],
     ))
 
-    # Candidate 2: Best 2-Way Parameter Interaction
+    # Candidate 2: Best 2-Way Parameter Interaction in active selection
     if best_interaction:
         p1_col = best_interaction["param_1"]
         p2_col = best_interaction["param_2"]
@@ -696,12 +835,13 @@ def discover_candidate_hypotheses(
             {
                 "hypothesis_id": f"HYP_INT_{p1_col}_X_{p2_col}",
                 "hypothesis_type": "two_way_interaction",
-                "title": f"Combined Effect: High {p1_col} + {cond_desc} {p2_col} triggers Bad (Red) wafers",
+                "short_title": f"{_format_short_param(p1_col)} × {_format_short_param(p2_col)}",
+                "title": f"Interaction: High {p1_col} + {cond_desc} {p2_col}",
                 "parameters": [p1_col, p2_col],
                 "interaction_mode": best_interaction["mode"],
                 "rationale": (
-                    f"Neither knob acts alone: when High {p1_col} coincides with {cond_desc} {p2_col}, "
-                    f"wafer yield drops from {best_interaction['low_mean_yield']:.1f}% to {best_interaction['high_mean_yield']:.1f}%."
+                    f"Safe window yields {best_interaction['low_mean_yield']:.1f}% vs. "
+                    f"{best_interaction['high_mean_yield']:.1f}% in joint corner."
                 ),
             },
             p_val=best_interaction["p_value"],
@@ -711,38 +851,42 @@ def discover_candidate_hypotheses(
             thresh=best_interaction["thresh"],
         ))
 
-    # Candidate 3: Static / Step-Level Importance Hypothesis (STEP_A)
+    # Candidate 3: Top Active Step-Level Hypothesis (dynamic based on selected columns!)
+    step_sel_str = f"({top_step['selected_col_count']}/{top_step['total_col_count']} cols active)"
     candidates.append(_enrich_candidate(
         {
             "hypothesis_id": f"HYP_STEP_{top_step['step']}",
             "hypothesis_type": "step_level",
-            "title": f"Whole Process Stage {top_step['step']} is the #1 factory yield bottleneck",
+            "short_title": f"{top_step['step']} Stage ({top_step['selected_col_count']}/20 Cols)",
+            "title": f"Process Stage {top_step['step']} Bottleneck {step_sel_str}",
             "parameters": [top_step["step"]],
             "rationale": (
-                f"Across all 5 process stages, {top_step['step']} as a combined step accounts for "
-                f"{top_step['variance_share_pct']}% of all wafer-to-wafer yield variation."
+                f"Across your {len(cols)} selected columns, {top_step['step']} {step_sel_str} drives "
+                f"{top_step['variance_share_pct']}% of active yield variance."
             ),
         },
-        p_val=1e-8,
-        slope=-14.5,
-        low_m=86.3,
-        high_m=76.5,
-        thresh=0.55,
+        p_val=top_step["p_value"],
+        slope=top_step["slope"],
+        low_m=top_step["low_mean_yield"],
+        high_m=top_step["high_mean_yield"],
+        thresh=top_step["split_threshold"],
         share_pct=top_step["variance_share_pct"],
+        step_selected_info=step_sel_str,
     ))
 
-    # Candidate 4: Second Single-Parameter Driver (e.g., STEP_B_RF_POWER_01 or user-mentioned column)
-    matched_custom = [c for c in all_param_cols if c in normalized_query]
-    if matched_custom and matched_custom[0] not in (top_1["column"],):
+    # Candidate 4..6: Next Single-Parameter Drivers from active `cols`
+    matched_custom = [c for c in cols if c in normalized_query]
+    if matched_custom and matched_custom[0] != top_1["column"]:
         c_col = matched_custom[0]
         c_stat = next((s for s in single_stats if s["column"] == c_col), single_stats[-1])
         candidates.append(_enrich_candidate(
             {
                 "hypothesis_id": f"HYP_CUSTOM_{c_col}",
                 "hypothesis_type": "single_parameter",
-                "title": f"Engineer Hypothesis: Does {c_col} drive wafer yield?",
+                "short_title": f"{c_col} (Custom)",
+                "title": f"Engineer Check: {c_col}",
                 "parameters": [c_col],
-                "rationale": f"Custom hypothesis requested for {c_col} (yield range {c_stat['low_mean_yield']:.1f}% vs. {c_stat['high_mean_yield']:.1f}%).",
+                "rationale": f"Yield spans {c_stat['low_mean_yield']:.1f}% to {c_stat['high_mean_yield']:.1f}%.",
             },
             p_val=c_stat["p_value"],
             slope=c_stat["slope"],
@@ -750,103 +894,87 @@ def discover_candidate_hypotheses(
             high_m=c_stat["high_mean_yield"],
             thresh=c_stat["split_threshold"],
         ))
-    elif len(single_stats) > 2:
-        sec_stat = next(
-            (s for s in single_stats[1:] if s["column"] not in (best_interaction["param_1"] if best_interaction else "", best_interaction["param_2"] if best_interaction else "")),
-            single_stats[1],
-        )
-        dir2 = "High" if sec_stat["r"] < 0 else "Low"
+
+    for extra_stat in single_stats[1:6]:
+        if any(extra_stat["column"] == c["parameters"][0] for c in candidates if c["hypothesis_type"] == "single_parameter"):
+            continue
+        if len(candidates) >= top_k - 2:
+            break
+        dir_e = "High" if extra_stat["r"] < 0 else "Low"
+        arrow_e = "↑" if extra_stat["r"] < 0 else "↓"
         candidates.append(_enrich_candidate(
             {
-                "hypothesis_id": f"HYP_SINGLE_{sec_stat['column']}",
+                "hypothesis_id": f"HYP_SINGLE_{extra_stat['column']}",
                 "hypothesis_type": "single_parameter",
-                "title": f"{dir2} {sec_stat['column']} reduces wafer pass rate",
-                "parameters": [sec_stat["column"]],
+                "short_title": f"{extra_stat['column']} {arrow_e}",
+                "title": f"{dir_e} {extra_stat['column']} shifts wafer yield",
+                "parameters": [extra_stat["column"]],
                 "rationale": (
-                    f"Secondary process driver: wafer yield shifts between {sec_stat['low_mean_yield']:.1f}% "
-                    f"and {sec_stat['high_mean_yield']:.1f}% across {sec_stat['column']}."
+                    f"Average yield shifts from {extra_stat['low_mean_yield']:.1f}% to "
+                    f"{extra_stat['high_mean_yield']:.1f}%."
                 ),
             },
-            p_val=sec_stat["p_value"],
-            slope=sec_stat["slope"],
-            low_m=sec_stat["low_mean_yield"],
-            high_m=sec_stat["high_mean_yield"],
-            thresh=sec_stat["split_threshold"],
+            p_val=extra_stat["p_value"],
+            slope=extra_stat["slope"],
+            low_m=extra_stat["low_mean_yield"],
+            high_m=extra_stat["high_mean_yield"],
+            thresh=extra_stat["split_threshold"],
         ))
 
-    # Candidate 5..8: Additional Single Parameters, Secondary Step Comparison, and Baseline Noise Controls
-    if len(single_stats) > 3:
-        for extra_stat in single_stats[2:5]:
-            if any(extra_stat["column"] in c["parameters"] for c in candidates):
-                continue
-            dir_e = "High" if extra_stat["r"] < 0 else "Low"
-            candidates.append(_enrich_candidate(
-                {
-                    "hypothesis_id": f"HYP_SINGLE_{extra_stat['column']}",
-                    "hypothesis_type": "single_parameter",
-                    "title": f"{dir_e} {extra_stat['column']} shifts wafer yield",
-                    "parameters": [extra_stat["column"]],
-                    "rationale": (
-                        f"Screened candidate in {extra_stat['column'][:6]}: average yield moves from "
-                        f"{extra_stat['low_mean_yield']:.1f}% to {extra_stat['high_mean_yield']:.1f}%."
-                    ),
-                },
-                p_val=extra_stat["p_value"],
-                slope=extra_stat["slope"],
-                low_m=extra_stat["low_mean_yield"],
-                high_m=extra_stat["high_mean_yield"],
-                thresh=extra_stat["split_threshold"],
-            ))
-
-    # Add Secondary Whole-Step Hypothesis (e.g., STEP_B or STEP_C)
-    if len(step_scores) > 1:
-        sec_step = step_scores[1]
+    # Candidate 7: Secondary Active Step Comparison (e.g. STEP_B or next active step)
+    if len(active_steps) > 1:
+        sec_step = active_steps[1]
+        sec_sel_str = f"({sec_step['selected_col_count']}/{sec_step['total_col_count']} cols active)"
         candidates.append(_enrich_candidate(
             {
                 "hypothesis_id": f"HYP_STEP_{sec_step['step']}",
                 "hypothesis_type": "step_level",
-                "title": f"Is Process Stage {sec_step['step']} (as a whole step) a major yield bottleneck?",
+                "short_title": f"{sec_step['step']} Stage ({sec_step['selected_col_count']}/20 Cols)",
+                "title": f"Stage Comparison: {sec_step['step']} {sec_sel_str}",
                 "parameters": [sec_step["step"]],
                 "rationale": (
-                    f"Stage comparison check: {sec_step['step']} accounts for {sec_step['variance_share_pct']}% "
-                    f"of line-wide yield variation (compared to {top_step['variance_share_pct']}% in {top_step['step']})."
+                    f"{sec_step['step']} {sec_sel_str} accounts for {sec_step['variance_share_pct']}% "
+                    f"of active yield variance (full 20-col baseline: {sec_step['full_baseline_share_pct']}%)."
                 ),
             },
-            p_val=0.18 if sec_step["variance_share_pct"] < 25.0 else 0.005,
-            slope=-3.2,
-            low_m=83.8,
-            high_m=81.9,
-            thresh=0.55,
+            p_val=sec_step["p_value"],
+            slope=sec_step["slope"],
+            low_m=sec_step["low_mean_yield"],
+            high_m=sec_step["high_mean_yield"],
+            thresh=sec_step["split_threshold"],
             share_pct=sec_step["variance_share_pct"],
+            step_selected_info=sec_sel_str,
         ))
 
-    # Add Baseline Noise Control Check so SMEs can see what a "Ruled Out / Random Noise" parameter looks like
+    # Candidate 8: Baseline Noise Control Check from active `cols`
     noise_stat = single_stats[-1]
-    candidates.append(_enrich_candidate(
-        {
-            "hypothesis_id": f"HYP_SINGLE_{noise_stat['column']}",
-            "hypothesis_type": "single_parameter",
-            "title": f"Baseline Control Check: Does {noise_stat['column']} affect wafer yield?",
-            "parameters": [noise_stat["column"]],
-            "rationale": (
-                f"Sanity-check control parameter ({noise_stat['low_mean_yield']:.1f}% vs. {noise_stat['high_mean_yield']:.1f}% yield) "
-                f"— test this card to confirm you can safely rule out {noise_stat['column']} as random noise."
-            ),
-        },
-        p_val=noise_stat["p_value"],
-        slope=noise_stat["slope"],
-        low_m=noise_stat["low_mean_yield"],
-        high_m=noise_stat["high_mean_yield"],
-        thresh=noise_stat["split_threshold"],
-    ))
+    if not any(noise_stat["column"] in c["parameters"] for c in candidates):
+        candidates.append(_enrich_candidate(
+            {
+                "hypothesis_id": f"HYP_SINGLE_{noise_stat['column']}",
+                "hypothesis_type": "single_parameter",
+                "short_title": f"{noise_stat['column']} (Noise Control)",
+                "title": f"Baseline Control: {noise_stat['column']}",
+                "parameters": [noise_stat["column"]],
+                "rationale": (
+                    f"Flat response ({noise_stat['low_mean_yield']:.1f}% vs. {noise_stat['high_mean_yield']:.1f}%) "
+                    f"— confirms {noise_stat['column']} can be ruled out."
+                ),
+            },
+            p_val=noise_stat["p_value"],
+            slope=noise_stat["slope"],
+            low_m=noise_stat["low_mean_yield"],
+            high_m=noise_stat["high_mean_yield"],
+            thresh=noise_stat["split_threshold"],
+        ))
 
     candidates = candidates[:top_k]
     a2ui_payload = build_hypothesis_discovery_a2ui(candidates)
 
-    # Hybrid Data + UI Output Schema (`Agent Tools & Interoperability.pdf`, p. 42, Snippet 7)
     return {
         "data": {
             "scanned_columns_count": len(cols),
+            "selected_columns": cols,
             "candidate_hypotheses": candidates,
             "step_attribution": step_scores,
         },
@@ -857,61 +985,62 @@ def discover_candidate_hypotheses(
 
 def evaluate_single_hypothesis(
     hypothesis: Dict[str, Any],
+    selected_columns: Optional[List[str]] = None,
     data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Evaluate a single hypothesis using statistical p-values (with FDR) + ML importance.
 
-    Produces:
-      - Zero-ML-jargon plain-English verdict, ceteris paribus slope, & everyday analogy
-      - Color-coded Statistical Certainty KPI sub-card metadata
-      - Caveats & potential multi-interaction confounders sub-card
-      - Color-coded Good (Green) vs. Bad (Red) wafer distribution across the tested parameter
-      - Step-level comparison chart data when evaluating a static process step (`STEP_A`..`STEP_E`)
-      - Validated A2UI v0.9 `createSurface` + `updateComponents` + `updateDataModel` hybrid output
+    Respects `selected_columns` so step-level evaluations and partial ceteris paribus slopes
+    dynamically reflect the engineer's active parameter subset.
     """
     rows = _load_obfuscated_rows(data_dir=data_dir)
     all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct")]
+    active_cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
+    if not active_cols:
+        active_cols = all_param_cols
     ys = [r["yield_pct"] for r in rows]
+
+    prelim_corrs = sorted(
+        [(c, abs(_pearson_r_and_p([r[c] for r in rows], ys)[0])) for c in active_cols],
+        key=lambda x: -x[1],
+    )
+    top_active_controls = [c for c, _ in prelim_corrs[:6]]
 
     h_id = hypothesis.get("hypothesis_id", "HYP_CUSTOM")
     h_type = hypothesis.get("hypothesis_type", "single_parameter")
     params = [obfuscate_column_name(p.upper()) for p in hypothesis.get("parameters", [])]
     title = hypothesis.get("title", f"Hypothesis on {', '.join(params)}")
+    short_title = hypothesis.get("short_title", title)
     step_share_pct = 0.0
+    step_selected_info = ""
 
-    # Auto-detect step-level hypothesis if parameter is STEP_A..STEP_E
     if len(params) == 1 and params[0] in STEP_OBFUSCATION_MAP.values():
         h_type = "step_level"
 
     if h_type == "step_level":
         step_name = params[0] if params else "STEP_A"
-        step_breakdown = []
-        for _, obf_s in STEP_OBFUSCATION_MAP.items():
-            s_cols = [c for c in all_param_cols if c.startswith(obf_s + "_")]
-            s_corrs = [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in s_cols]
-            s_corrs.sort(key=lambda item: -abs(item[1]))
-            r2_sum = sum(r_val * r_val for _, r_val in s_corrs)
-            step_breakdown.append({
-                "step": obf_s,
-                "r2_sum": r2_sum,
-                "top_parameters": [c for c, _ in s_corrs[:3]],
-            })
-        total_r2 = sum(b["r2_sum"] for b in step_breakdown) or 1.0
-        for b in step_breakdown:
-            b["share_pct"] = round(100.0 * b["r2_sum"] / total_r2, 1)
-
+        step_breakdown = _compute_step_breakdown(rows, ys, all_param_cols, active_cols)
         target_info = next((b for b in step_breakdown if b["step"] == step_name), step_breakdown[0])
-        top_knobs = target_info["top_parameters"]
-        step_share_pct = target_info["share_pct"]
 
-        # Build composite Step Stress Score in [0, 1] from top drivers in that step
+        # If the user deselected all columns of this step, fall back to full step columns but flag 0/20 active
+        s_cols = [c for c in active_cols if c.startswith(step_name + "_")]
+        if not s_cols:
+            s_cols = [c for c in all_param_cols if c.startswith(step_name + "_")]
+        s_corrs = sorted(
+            [(c, _pearson_r_and_p([r[c] for r in rows], ys)[0]) for c in s_cols],
+            key=lambda item: -abs(item[1]),
+        )
+        top_knobs = [c for c, _ in s_corrs[:3]]
+        step_share_pct = target_info["variance_share_pct"]
+        step_selected_info = f"({target_info['selected_col_count']}/{target_info['total_col_count']} cols active)"
+        short_title = f"{step_name} Stage {step_selected_info}"
+
         raw_stress = []
         for r in rows:
             s_val = 0.0
-            for c in top_knobs:
-                r_c, _, _ = _pearson_r_and_p([row[c] for row in rows], ys)
+            for c, r_c in s_corrs[:3]:
                 s_val += r[c] if r_c < 0 else (1.0 - r[c])
-            raw_stress.append(s_val / max(1, len(top_knobs)))
+            raw_stress.append(s_val / max(1, len(s_corrs[:3])))
         s_min, s_max = min(raw_stress), max(raw_stress)
         norm_stress = [(v - s_min) / max(1e-9, s_max - s_min) for v in raw_stress]
         for r, sv in zip(rows, norm_stress):
@@ -922,10 +1051,10 @@ def evaluate_single_hypothesis(
         thresh, low_m, high_m, ml_gain = _tree_stump_importance(norm_stress, ys)
         slope_norm = _compute_linear_slope(norm_stress, ys)
         dist = _compute_good_bad_distribution(rows, lambda r: r["_step_stress"])
-        dist["x_axis_label"] = f"{step_name} Composite Stress Index (0 = Optimal Spec, 1 = High Off-Spec Stress)"
+        dist["x_axis_label"] = f"{step_name} Stress Index {step_selected_info}"
         dist["step_comparison"] = [
-            {"step": b["step"], "share_pct": b["share_pct"]}
-            for b in sorted(step_breakdown, key=lambda x: -x["share_pct"])
+            {"step": b["step"], "share_pct": b["variance_share_pct"]}
+            for b in step_breakdown
         ]
 
         low_good_pct = round(
@@ -939,24 +1068,26 @@ def evaluate_single_hypothesis(
             1,
         )
 
-        is_sig = p_val < 0.01 and target_info["share_pct"] >= 30.0
+        is_sig = p_val < 0.01 and step_share_pct >= 25.0
         verdict = (
             "CONFIRMED STAGE BOTTLENECK (High Confidence)"
             if is_sig
             else "NO STAGE-LEVEL EVIDENCE (Minor Step Impact)"
         )
+        desel_note = (
+            f" ({len(target_info['deselected_cols'])} columns deselected by user)"
+            if target_info["deselected_cols"]
+            else ""
+        )
         summary = (
-            f"Process stage {step_name} as a whole accounts for {target_info['share_pct']}% of total "
-            f"yield variation across all 5 process steps. Wafers with low {step_name} stress (< 0.60) "
-            f"achieved {low_m:.1f}% average yield ({low_good_pct}% Good Wafers in Green), whereas high "
-            f"{step_name} stress (>= 0.60) dropped to {high_m:.1f}% average yield ({high_bad_pct}% Bad "
-            f"Wafers in Red). Top contributing knobs inside {step_name}: {', '.join(top_knobs[:2])}."
+            f"{step_name} {step_selected_info}{desel_note} accounts for {step_share_pct}% of active yield variance "
+            f"(20-col baseline: {target_info['full_baseline_share_pct']}%). Low stress (<0.60) averages "
+            f"{low_m:.1f}% yield ({low_good_pct}% Green wafers) vs. {high_m:.1f}% ({high_bad_pct}% Red wafers) when stressed."
         )
         action = (
-            f"Focus engineering containment on {step_name} (specifically {top_knobs[0]} and {top_knobs[1]}) "
-            f"before adjusting downstream steps."
+            f"Stabilize {step_name} top active knobs ({', '.join(top_knobs[:2])}) within spec."
             if is_sig
-            else f"{step_name} is not a primary bottleneck ({target_info['share_pct']}% share); inspect STEP_A instead."
+            else f"{step_name} ({step_share_pct}% active share) is not the main bottleneck; focus on STEP_A."
         )
 
     elif h_type == "two_way_interaction" and len(params) >= 2:
@@ -965,6 +1096,7 @@ def evaluate_single_hypothesis(
             c1 = "STEP_A_TEMPERATURE_02"
         if c2 not in all_param_cols:
             c2 = "STEP_A_PRESSURE_01"
+        short_title = f"{_format_short_param(c1)} × {_format_short_param(c2)}"
         mode = hypothesis.get("interaction_mode", "HIGH_LOW")
         raw_ix = [
             (r[c1] * (1.0 - r[c2])) if mode == "HIGH_LOW" else (r[c1] * r[c2])
@@ -978,10 +1110,11 @@ def evaluate_single_hypothesis(
         r_val, t_stat, p_val = _pearson_r_and_p(norm_ix, ys)
         q_val = min(1.0, p_val * 50.0)
         thresh, low_m, high_m, ml_gain = _tree_stump_importance(norm_ix, ys)
-        slope_norm = _compute_linear_slope(norm_ix, ys)
+        ctrl = [c for c in top_active_controls if c not in (c1, c2)]
+        slope_norm = _compute_partial_slope(rows, norm_ix, ys, ctrl)
         dist = _compute_good_bad_distribution(rows, lambda r: r["_ix_score"])
         cond_label = f"High {c1} + Low {c2}" if mode == "HIGH_LOW" else f"High {c1} + High {c2}"
-        dist["x_axis_label"] = f"Interaction Exposure ({cond_label}) [0.0 = Safe, 1.0 = Danger Zone]"
+        dist["x_axis_label"] = f"Joint Exposure ({_format_short_param(c1)} × {_format_short_param(c2)})"
         q_safe = [r["yield_pct"] for r in rows if not (r[c1] > 0.55 and r[c2] < 0.45)]
         q_danger = [r["yield_pct"] for r in rows if (r[c1] > 0.55 and r[c2] < 0.45)]
         safe_mean = round(sum(q_safe) / max(1, len(q_safe)), 2)
@@ -1005,15 +1138,13 @@ def evaluate_single_hypothesis(
             else "NO INTERACTION EVIDENCE (Likely Independent / Noise)"
         )
         summary = (
-            f"Testing the interaction between {c1} and {c2}: Wafers in the Danger Zone "
-            f"({cond_label}) averaged {danger_mean:.1f}% yield ({high_bad_pct}% Bad Wafers in Red), "
-            f"compared to {safe_mean:.1f}% yield ({low_good_pct}% Good Wafers in Green) when kept "
-            f"outside that corner ({safe_mean - danger_mean:+.1f}% yield difference)."
+            f"Danger Zone ({cond_label}) averages {danger_mean:.1f}% yield ({high_bad_pct}% Red wafers) "
+            f"vs. {safe_mean:.1f}% ({low_good_pct}% Green wafers) in safe zone."
         )
         action = (
-            f"Interlock recipe limits: Whenever {c1} exceeds 0.55, maintain {c2} above 0.50 to prevent delamination excursions."
+            f"Interlock specs: When {c1} > 0.55, hold {c2} ≥ 0.50."
             if is_sig
-            else f"No synergy lock needed between {c1} and {c2}."
+            else f"No recipe interlock needed between {c1} and {c2}."
         )
         low_m, high_m = safe_mean, danger_mean
 
@@ -1021,11 +1152,13 @@ def evaluate_single_hypothesis(
         col = params[0] if (params and params[0] in all_param_cols) else "STEP_A_TEMPERATURE_01"
         xs = [r[col] for r in rows]
         r_val, t_stat, p_val = _pearson_r_and_p(xs, ys)
-        q_val = min(1.0, p_val * 100.0)
+        q_val = min(1.0, p_val * len(active_cols))
         thresh, low_m, high_m, ml_gain = _tree_stump_importance(xs, ys)
-        slope_norm = _compute_linear_slope(xs, ys)
+        ctrl = [c for c in top_active_controls if c != col]
+        slope_norm = _compute_partial_slope(rows, xs, ys, ctrl)
         dist = _compute_good_bad_distribution(rows, lambda r, c=col: r[c])
         dist["x_axis_label"] = f"Normalized {col} Setting (0.0 = Low, 1.0 = High)"
+        short_title = f"{col} {'↑' if r_val < 0 else '↓'}"
 
         low_good = sum(dist["good_wafer_counts"][:3])
         low_total = max(1, low_good + sum(dist["bad_wafer_counts"][:3]))
@@ -1039,34 +1172,26 @@ def evaluate_single_hypothesis(
             verdict = "CONFIRMED PROCESS DRIVER (High Confidence)"
             if r_val < 0:
                 summary = (
-                    f"Across 100 wafers, keeping {col} below {thresh:.2f} produced {low_m:.1f}% average yield "
-                    f"({low_good_pct}% Good Wafers in Green), whereas running above {thresh:.2f} dropped yield "
-                    f"to {high_m:.1f}% ({high_bad_pct}% Bad Wafers in Red) — a {low_m - high_m:+.1f}% yield gain."
+                    f"Keeping {col} ≤ {thresh:.2f} yields {low_m:.1f}% ({low_good_pct}% Green wafers), "
+                    f"while > {thresh:.2f} drops to {high_m:.1f}% ({high_bad_pct}% Red wafers)."
                 )
-                action = f"Tighten upper control limit on {col} to stay within the 0.00 - {thresh:.2f} green window."
+                action = f"Cap {col} upper control limit ≤ {thresh:.2f}."
             else:
                 summary = (
-                    f"Across 100 wafers, maintaining {col} above {thresh:.2f} improved average yield to "
-                    f"{high_m:.1f}% compared to {low_m:.1f}% below {thresh:.2f} ({high_m - low_m:+.1f}% yield gain)."
+                    f"Maintaining {col} ≥ {thresh:.2f} yields {high_m:.1f}% vs. {low_m:.1f}% below {thresh:.2f}."
                 )
-                action = f"Maintain {col} above {thresh:.2f} for higher green-wafer pass rates."
+                action = f"Hold {col} lower control limit ≥ {thresh:.2f}."
         elif p_val < 0.05:
             verdict = "POSSIBLE LINK (Moderate Evidence - Monitor)"
-            summary = (
-                f"{col} shows a modest correlation with wafer yield ({low_m:.1f}% vs {high_m:.1f}%), "
-                f"but after checking against 100 parameters, more wafer lots are needed to confirm."
-            )
-            action = f"Keep {col} under observation on the next 50 wafers before changing spec limits."
+            summary = f"{col} shows a modest shift ({low_m:.1f}% vs {high_m:.1f}% yield); monitor next 30 wafers."
+            action = f"Monitor {col}; do not lock spec limits yet."
         else:
             verdict = "NO EVIDENCE (Likely Random Noise - Rule Out)"
-            summary = (
-                f"Good (Green) and Bad (Red) wafers are spread evenly across the full range of {col} "
-                f"(average yield {low_m:.1f}% when low vs {high_m:.1f}% when high). This parameter does NOT drive yield."
-            )
-            action = f"Rule out {col} as a root cause and do not tighten its machine tolerance."
+            summary = f"Green and Red wafers are evenly distributed across {col} ({low_m:.1f}% vs {high_m:.1f}%)."
+            action = f"Rule out {col}; leave machine tolerance unchanged."
 
     conf_meta = _confidence_metadata(p_val)
-    ceteris_paribus, everyday_analogy = _build_ceteris_paribus_and_analogy(
+    c_hero, c_short, ceteris_paribus, everyday_analogy = _build_ceteris_paribus_and_analogy(
         h_type=h_type,
         params=params,
         slope_norm=slope_norm,
@@ -1075,19 +1200,19 @@ def evaluate_single_hypothesis(
         thresh=thresh,
         is_sig=(p_val < 0.01),
         step_share_pct=step_share_pct,
+        active_controls_count=max(0, len(active_cols) - len(params)),
+        step_selected_info=step_selected_info,
     )
-    caveats = _build_confounder_caveats(rows, all_param_cols, params, h_type)
+    caveats = _build_confounder_caveats(rows, all_param_cols, active_cols, params, h_type)
 
     good_total = sum(dist["good_wafer_counts"])
     bad_total = sum(dist["bad_wafer_counts"])
-    good_bad_split = (
-        f"Wafer Health Split (Threshold >= {GOOD_WAFER_YIELD_THRESHOLD}% Yield): "
-        f"{good_total} Good Wafers (Green) vs. {bad_total} Bad Wafers (Red) across 100 wafers."
-    )
+    good_bad_split = f"{good_total} Good Wafers (Green) • {bad_total} Bad Wafers (Red)"
 
     eval_data = {
         "hypothesis_id": h_id,
         "hypothesis_type": h_type,
+        "short_title": short_title,
         "title": title,
         "parameters": params,
         "verdict_badge": verdict,
@@ -1097,16 +1222,21 @@ def evaluate_single_hypothesis(
         "t_statistic": t_stat,
         "ml_variance_explained": ml_gain,
         "confidence_pct": conf_meta["confidence_pct"],
+        "confidence_hero": conf_meta["confidence_hero"],
+        "confidence_label": conf_meta["confidence_label"],
         "confidence_tier": conf_meta["confidence_tier"],
         "confidence_color": conf_meta["confidence_color"],
         "confidence_badge": conf_meta["confidence_badge"],
         "certainty_statement": conf_meta["confidence_plain"],
+        "ceteris_paribus_hero": c_hero,
+        "ceteris_paribus_short": c_short,
         "ceteris_paribus": ceteris_paribus,
         "everyday_analogy": everyday_analogy,
         "caveats_and_confounders": caveats,
         "plain_english_summary": summary,
         "good_bad_wafer_split": good_bad_split,
         "recommended_action": action,
+        "active_columns_count": len(active_cols),
         "distribution_chart": dist,
     }
 
@@ -1121,3 +1251,4 @@ def evaluate_single_hypothesis(
         ],
         "ui_available": True,
     }
+

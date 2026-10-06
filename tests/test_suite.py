@@ -388,7 +388,7 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             # 1. GET /
             with urllib.request.urlopen(f"{base_url}/") as resp:
                 html = resp.read().decode("utf-8")
-                self.assertIn("Process Hypothesis Agent", html)
+                self.assertIn("Process Yield Hypothesis", html)
 
             # 2. POST /api/preprocess
             req_pre = urllib.request.Request(
@@ -446,6 +446,47 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_08_subset_sensitivity_and_hero_kpis(self) -> None:
+        """Verify that deselecting STEP_B columns dynamically changes agent replies, step attribution, and Hero KPIs."""
+        app = ProcessHypothesisMultiAgentApp(
+            db_path=self.base_path / "subset_test.db",
+            data_dir=self.data_dir,
+        )
+        pre_all = app.preprocess_dataset(batches=["ALL"], session_id="subset_sess")
+        all_cols = pre_all["all_columns"]
+
+        # 1. Full 100-column scan on STEP_B
+        res_full = app.run_hypothesis_generator_agent(
+            user_message="Check STEP_B",
+            selected_columns=all_cols,
+            session_id="subset_sess",
+        )
+        step_b_full = next(s for s in res_full["step_attribution"] if s["step"] == "STEP_B")
+        self.assertEqual(step_b_full["selected_col_count"], 20)
+        self.assertIn("20/20", res_full["chat_reply"])
+
+        # 2. Deselect 8 STEP_B columns (including STEP_B_RF_POWER_01) and re-query
+        step_b_cols = [c for c in all_cols if c.startswith("STEP_B_")]
+        dropped_b = set(step_b_cols[:8]) | {"STEP_B_RF_POWER_01"}
+        reduced_cols = [c for c in all_cols if c not in dropped_b]
+
+        res_reduced = app.run_hypothesis_generator_agent(
+            user_message="Check STEP_B",
+            selected_columns=reduced_cols,
+            session_id="subset_sess",
+        )
+        step_b_red = next(s for s in res_reduced["step_attribution"] if s["step"] == "STEP_B")
+        self.assertLess(step_b_red["selected_col_count"], 20)
+        self.assertGreater(len(step_b_red["deselected_cols"]), 0)
+        self.assertNotEqual(res_full["chat_reply"], res_reduced["chat_reply"])
+        self.assertIn("deselected", res_reduced["chat_reply"])
+
+        # 3. Verify Hero KPI strings (confidence_hero e.g. '99.9%', ceteris_paribus_hero e.g. '/ +10°C' or '/ +10s')
+        for cand in res_reduced["candidate_hypotheses"]:
+            self.assertIn("%", cand["confidence_hero"])
+            self.assertIn("/", cand["ceteris_paribus_hero"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

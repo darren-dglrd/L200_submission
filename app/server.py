@@ -126,7 +126,14 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/api/chat_generate":
             msg = body.get("message", "")
-            res = GLOBAL_APP.run_hypothesis_generator_agent(user_message=msg, session_id=session_id)
+            sel_cols = body.get("selected_columns")
+            use_llm = bool(body.get("use_llm", False))
+            res = GLOBAL_APP.run_hypothesis_generator_agent(
+                user_message=msg,
+                selected_columns=sel_cols,
+                use_llm=use_llm,
+                session_id=session_id,
+            )
             self._send_json(res)
             return
 
@@ -140,7 +147,10 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/queue/evaluate_next":
-            res = GLOBAL_APP.run_hypothesis_evaluator_agent_next(session_id=session_id)
+            sel_cols = body.get("selected_columns")
+            res = GLOBAL_APP.run_hypothesis_evaluator_agent_next(
+                selected_columns=sel_cols, session_id=session_id
+            )
             self._send_json(res)
             return
 

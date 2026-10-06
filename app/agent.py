@@ -29,11 +29,13 @@ Design Principles Invoked Verbatim (the Google 5-Day AI Agents Intensive whitepa
 
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 import time
+from typing import Any, Dict, List, Optional, Tuple
+import urllib.request
 import uuid
-from typing import Any, Dict, List, Optional
 
 from app.guardrails import AgentObservability, SafetyPlugin
 from app.stats_engine import discover_candidate_hypotheses, evaluate_single_hypothesis
@@ -56,6 +58,31 @@ try:
     ADK_SDK_AVAILABLE = True
 except ImportError:
     ADK_SDK_AVAILABLE = False
+
+
+def _invoke_live_llm_agent(grounded_prompt: str, enable_live_llm: bool = False) -> Tuple[Optional[str], str]:
+    """Invoke live Gemini LLM via Google GenAI REST API (`gemini-2.5-flash`).
+
+    Returns (llm_response_text_or_None, backing_engine_name).
+    """
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if api_key and enable_live_llm:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+            req_body = json.dumps({
+                "contents": [{"parts": [{"text": grounded_prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 220},
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=req_body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                txt = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if txt:
+                    return txt, "Gemini 2.5 Flash API + Subset Partial-OLS Engine"
+        except Exception:
+            pass
+
+    return None, "ADK Subset Partial-OLS Agent Engine"
 
 
 # ============================================================================
@@ -128,11 +155,11 @@ class SQLiteSessionService:
             ).fetchone()
             if row is None:
                 initial_state = {
-                    # Scoped state keys 
                     "user:role": "Process Subject-Matter Expert (Non-ML)",
                     "app:dataset_key": "wafer_id",
                     "selected_batches": ["ALL"],
                     "selected_columns": [],
+                    "last_scanned_columns": [],
                     "candidate_hypotheses": [],
                     "hypothesis_queue": [],
                     "evaluated_results": [],
@@ -180,7 +207,6 @@ class SQLiteSessionService:
         content: Dict[str, Any],
         compaction_config: Optional[EventsCompactionConfig] = None,
     ) -> None:
-        # Strip `temp:` keys before persisting 
         persisted_state = {k: v for k, v in state.items() if not k.startswith("temp:")}
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -212,13 +238,7 @@ class SQLiteSessionService:
 # ============================================================================
 
 class ProcessMemoryBank:
-    """Implements Ingestion -> Extraction -> Consolidation (CREATE/UPDATE/DELETE) -> Retrieval.
-
-    Tracks Provenance Source Trust Hierarchy (`Context Engineering`, p. 50):
-      1. Explicit User Input (trust = 0.95)
-      2. Analytics Discovery (trust = 0.85)
-      3. Transient Tool Output (trust = 0.50 — not persisted unless validated)
-    """
+    """Implements Ingestion -> Extraction -> Consolidation (CREATE/UPDATE/DELETE) -> Retrieval."""
 
     def __init__(self) -> None:
         self.memories: List[Dict[str, Any]] = []
@@ -230,7 +250,6 @@ class ProcessMemoryBank:
         source_type: str = "Explicit User Input",
         importance: float = 0.85,
     ) -> Dict[str, Any]:
-        """Stage 2 & 3: Extract & Consolidate (`CREATE` or `UPDATE` existing memory on same topic)."""
         trust_map = {
             "Bootstrapped Data": 1.0,
             "Explicit User Input": 0.95,
@@ -261,7 +280,6 @@ class ProcessMemoryBank:
         return {"operation": "CREATE", "memory": new_mem}
 
     def retrieve_blended(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Multi-Dimensional Retrieval blending Relevance + Recency + Importance (`Context Engineering`, p. 55)."""
         q_tokens = set(query.lower().split())
         now = time.time()
         scored = []
@@ -286,18 +304,7 @@ def run_data_preprocess_skill(
     confirmed: bool = False,
     data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Execute the `data_preprocess` Agent Skill to obfuscate confidential wafer data and select parameter batches or hand-picked columns.
-
-    Args:
-        batches: List of batch category or step tokens to select (e.g., ['TEMPERATURE', 'PRESSURE', 'STEP_A']).
-        custom_columns: Optional explicit list of individual columns selected by hand.
-        require_hitl_above: Threshold of selected columns above which Human-in-the-Loop confirmation is requested.
-        confirmed: True if a paused `adk_request_confirmation` invocation has been approved by the human reviewer.
-        data_dir: Optional directory path override for dataset files.
-
-    Returns:
-        Concise JSON dictionary with obfuscated file reference, selected column list, and full table rows.
-    """
+    """Execute the `data_preprocess` Agent Skill to obfuscate confidential wafer data and select parameter batches or hand-picked columns."""
     res = obfuscate_and_select_batches(batches=batches, custom_columns=custom_columns, data_dir=data_dir)
     if res["selected_columns_count"] > require_hitl_above and not confirmed:
         return {
@@ -314,14 +321,7 @@ def run_data_preprocess_skill(
 # ============================================================================
 
 class ProcessHypothesisMultiAgentApp:
-    """Coordinates Agent 1 (`hypothesis_generator_agent`) and Agent 2 (`hypothesis_evaluator_agent`).
-
-    Wires:
-      - `SafetyPlugin` (`before_model_callback`, `before_tool_callback`, `after_model_callback`)
-      - `SQLiteSessionService` + `SlidingWindowFilterPlugin` + `EventsCompactionConfig`
-      - `ProcessMemoryBank` (4-Stage Memory ETL)
-      - `AgentObservability` (OpenTelemetry traces + Agent Diary structured logs)
-    """
+    """Coordinates Agent 1 (`hypothesis_generator_agent`) and Agent 2 (`hypothesis_evaluator_agent`)."""
 
     def __init__(self, db_path: Path = DB_PATH, data_dir: Optional[Path] = None) -> None:
         self.data_dir = data_dir or DATA_DIR
@@ -357,7 +357,6 @@ class ProcessHypothesisMultiAgentApp:
             attributes={"batches": batches, "custom_columns_count": len(custom_columns or [])},
         )
 
-        # Apply Sensitive-Data Classifier pre-response hook (`after_model_callback`)
         clean_res, redactions = self.safety_plugin.check_output_pii(res)
         session["state"]["selected_batches"] = clean_res.get("selected_batches", batches)
         session["state"]["selected_columns"] = clean_res.get("selected_columns", [])
@@ -378,9 +377,11 @@ class ProcessHypothesisMultiAgentApp:
     def run_hypothesis_generator_agent(
         self,
         user_message: str = "",
+        selected_columns: Optional[List[str]] = None,
+        use_llm: bool = False,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
-        """Agent 1 (`hypothesis_generator_agent`): Generates candidate hypotheses & A2UI v0.9 cards."""
+        """Agent 1 (`hypothesis_generator_agent`): Generates subset-aware candidate hypotheses & A2UI v0.9 cards."""
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         session = self.session_service.get_or_create_session(session_id=session_id)
 
@@ -403,14 +404,23 @@ class ProcessHypothesisMultiAgentApp:
                 "trace_id": trace_id,
             }
 
-        # Ensure dataset is preprocessed if session has no selected_columns yet
-        if not session["state"].get("selected_columns"):
+        prev_scanned_cols = list(session["state"].get("last_scanned_columns") or session["state"].get("selected_columns") or [])
+
+        # If frontend passed explicit `selected_columns`, sync them immediately!
+        if selected_columns is not None and len(selected_columns) > 0:
+            session["state"]["selected_columns"] = list(selected_columns)
+        elif not session["state"].get("selected_columns"):
             self.preprocess_dataset(batches=["ALL"], session_id=session_id)
             session = self.session_service.get_or_create_session(session_id=session_id)
 
-        selected_cols = session["state"]["selected_columns"]
+        selected_cols = list(session["state"]["selected_columns"])
 
-        # 2. Execute `hypothesis_generator_agent` analytical discovery + custom SME query parsing
+        # Compute exact Selection Delta since last scan
+        added_cols = [c for c in selected_cols if c not in prev_scanned_cols] if prev_scanned_cols else []
+        removed_cols = [c for c in prev_scanned_cols if c not in selected_cols] if prev_scanned_cols else []
+        session["state"]["last_scanned_columns"] = list(selected_cols)
+
+        # 2. Execute `hypothesis_generator_agent` analytical discovery strictly on `selected_cols`
         def _exec_gen():
             return discover_candidate_hypotheses(
                 selected_columns=selected_cols,
@@ -427,10 +437,41 @@ class ProcessHypothesisMultiAgentApp:
             attributes={"selected_columns_count": len(selected_cols), "user_message": user_message},
         )
 
-        # If the user typed a specific custom hypothesis in chat, synthesize/prioritize matching cards
         candidates = list(discovery_bundle["data"]["candidate_hypotheses"])
         step_attr = discovery_bundle["data"]["step_attribution"]
-        top_step_str = ", ".join(f"`{s['step']}` ({s['variance_share_pct']}%)" for s in step_attr[:3])
+
+        # Build concise per-step active selection summary (shows exact selected/20 count + active share)
+        step_pills = []
+        partial_steps = []
+        for s in sorted(step_attr, key=lambda x: x["step"]):
+            cnt = s["selected_col_count"]
+            tot = s["total_col_count"]
+            shr = s["variance_share_pct"]
+            step_pills.append(f"`{s['step']}` ({cnt}/{tot} cols • **{shr}%** var)")
+            if 0 < cnt < tot:
+                desel_preview = ", ".join(f"`{c}`" for c in s["deselected_cols"][:2])
+                more = f" +{len(s['deselected_cols']) - 2} more" if len(s["deselected_cols"]) > 2 else ""
+                partial_steps.append(
+                    f"`{s['step']}` has **{cnt}/{tot}** columns selected ({len(s['deselected_cols'])} deselected: {desel_preview}{more}; "
+                    f"active variance share **{shr}%** vs **{s['full_baseline_share_pct']}%** full 20-col baseline)"
+                )
+            elif cnt == 0:
+                partial_steps.append(f"`{s['step']}` has **0/20** columns selected (completely excluded from scan)")
+
+        delta_line = ""
+        if added_cols or removed_cols:
+            parts = []
+            if removed_cols:
+                rem_preview = ", ".join(f"`{c}`" for c in removed_cols[:3])
+                rem_more = f" (+{len(removed_cols) - 3} more)" if len(removed_cols) > 3 else ""
+                parts.append(f"**-{len(removed_cols)} deselected** ({rem_preview}{rem_more})")
+            if added_cols:
+                add_preview = ", ".join(f"`{c}`" for c in added_cols[:3])
+                add_more = f" (+{len(added_cols) - 3} more)" if len(added_cols) > 3 else ""
+                parts.append(f"**+{len(added_cols)} added** ({add_preview}{add_more})")
+            delta_line = f"- **Column Selection Updated:** {'; '.join(parts)} — all statistics & ceteris paribus slopes recalculated on your **{len(selected_cols)}/100** active columns.\n"
+
+        partial_step_line = f"- **Modified Step Subsets:** {'; '.join(partial_steps[:2])}.\n" if partial_steps else ""
 
         if user_message.strip():
             upper_msg = user_message.upper()
@@ -471,87 +512,124 @@ class ProcessHypothesisMultiAgentApp:
             if wants_interaction:
                 int_cards = [c for c in candidates if c["hypothesis_type"] == "two_way_interaction"]
                 other_cards = [c for c in candidates if c["hypothesis_type"] != "two_way_interaction"]
-                candidates = int_cards + other_cards
+                if int_cards:
+                    candidates = int_cards + other_cards
                 top_int = candidates[0]
                 chat_reply = (
-                    f"**Query Analyzed:** *{user_message.strip()}*\n\n"
-                    f"- **Top 2-Way Interaction Found:** `{top_int['parameters'][0]}` × `{top_int['parameters'][1]}` — {top_int['rationale']}\n"
-                    f"- **Ceteris Paribus Rule of Thumb:** {top_int.get('ceteris_paribus', '')}\n"
-                    f"- **Stage Bottleneck Ranking:** {top_step_str}.\n"
-                    f"- Click **+ Add to Testing Queue** on any of the **{len(candidates)} cards** below (no queue limit!)."
+                    f"**Interaction Scan ({len(selected_cols)}/100 Active Columns):**\n\n"
+                    f"{delta_line}"
+                    f"{partial_step_line}"
+                    f"- **Top Active Interaction:** `{top_int.get('short_title', top_int['title'])}` — **{top_int.get('confidence_hero', '99.9%')}** certainty, **{top_int.get('ceteris_paribus_hero', '')}**.\n"
+                    f"- **Active Step Breakdown:** {', '.join(step_pills[:3])}.\n"
                 )
             elif detected_step:
-                step_info = next((s for s in step_attr if s["step"] == detected_step), {"step": detected_step, "variance_share_pct": 0.0})
+                step_info = next((s for s in step_attr if s["step"] == detected_step), step_attr[0])
                 existing_step = next((c for c in candidates if c["hypothesis_id"] == f"HYP_STEP_{detected_step}"), None)
+                sel_cnt = step_info["selected_col_count"]
+                tot_cnt = step_info["total_col_count"]
+                desel_list = step_info["deselected_cols"]
+                top_step_knobs = ", ".join(f"`{k}`" for k in step_info["top_parameters"][:2]) or "None (0 cols selected)"
+
                 if existing_step:
                     candidates = [existing_step] + [c for c in candidates if c["hypothesis_id"] != existing_step["hypothesis_id"]]
                 else:
-                    is_high = step_info["variance_share_pct"] >= 30.0
+                    is_high = step_info["variance_share_pct"] >= 25.0 and sel_cnt > 0
+                    pct_hero = "99.9%" if is_high else (f"{max(12, int((1.0 - step_info['p_value']) * 100))}%" if sel_cnt > 0 else "0%")
+                    cp_hero = f"{step_info['slope'] * 0.10:+.2f}% / +10% Stress" if sel_cnt > 0 else "0.00% (0 Cols)"
                     step_hyp = {
                         "hypothesis_id": f"HYP_STEP_{detected_step}",
                         "hypothesis_type": "step_level",
-                        "title": f"Whole Process Stage {detected_step} drives wafer yield variation",
+                        "short_title": f"{detected_step} Stage ({sel_cnt}/{tot_cnt} Cols)",
+                        "title": f"Process Stage {detected_step} ({sel_cnt}/{tot_cnt} cols active)",
                         "parameters": [detected_step],
                         "rationale": (
-                            f"Evaluates all 20 parameters inside {detected_step} as a combined stage "
-                            f"(accounts for ~{step_info['variance_share_pct']}% of total yield variance across all 5 steps)."
+                            f"Evaluates the {sel_cnt}/{tot_cnt} active columns in {detected_step} "
+                            f"({step_info['variance_share_pct']}% of active variance vs {step_info['full_baseline_share_pct']}% full 20-col baseline)."
                         ),
                         "confidence_pct": 99.9 if is_high else 22.0,
+                        "confidence_hero": pct_hero,
+                        "confidence_label": "Confirmed Bottleneck" if is_high else "Minor Stage",
                         "confidence_tier": "HIGH" if is_high else "LOW",
                         "confidence_color": "emerald" if is_high else "rose",
-                        "confidence_badge": (
-                            "99.9% Statistical Certainty • Primary Stage Bottleneck"
-                            if is_high
-                            else f"22% Statistical Certainty • Minor Stage ({step_info['variance_share_pct']}% Share)"
-                        ),
-                        "ceteris_paribus": (
-                            f"For every +10% increase in overall {detected_step} off-spec stress, final wafer yield drops by "
-                            f"{1.45 if is_high else 0.25:.2f}%, ceteris paribus (all other stages held constant)."
-                        ),
-                        "everyday_analogy": (
-                            f"Think of the 5 process steps like a 5-stage water filter: {step_info['variance_share_pct']}% "
-                            f"of yield variation originates in {detected_step}."
-                        ),
+                        "confidence_badge": f"{pct_hero} Certainty • {sel_cnt}/{tot_cnt} Active Cols",
+                        "ceteris_paribus_hero": cp_hero,
+                        "ceteris_paribus_short": f"{step_info['variance_share_pct']}% active variance ({sel_cnt}/{tot_cnt} cols)",
+                        "ceteris_paribus": f"{cp_hero} across the {sel_cnt} selected columns in {detected_step}.",
+                        "everyday_analogy": f"5-stage filter: {step_info['variance_share_pct']}% of active variance comes from {detected_step}'s {sel_cnt} active knobs.",
                         "caveats_and_confounders": candidates[0].get("caveats_and_confounders", []),
                     }
                     candidates = [step_hyp] + [c for c in candidates if c["hypothesis_id"] != step_hyp["hypothesis_id"]]
+
+                desel_msg = (
+                    f" (**{len(desel_list)} deselected**: {', '.join(f'`{c}`' for c in desel_list[:3])}{'...' if len(desel_list) > 3 else ''})"
+                    if desel_list
+                    else " (all 20 columns active)"
+                )
                 chat_reply = (
-                    f"**Stage Analysis for `{detected_step}`:**\n\n"
-                    f"- `{detected_step}` accounts for **{step_info['variance_share_pct']}%** of total yield variance across the 100 wafers (`10,000` cells).\n"
-                    f"- Raw stage names in your query are automatically mapped to `{detected_step}` by `SafetyPlugin`.\n"
-                    f"- I placed the **Whole-Stage `{detected_step}` Hypothesis** at `#1` of your **{len(candidates)} candidate cards** below—click **+ Add to Testing Queue** to evaluate it!"
+                    f"**Stage Analysis for `{detected_step}` ({sel_cnt}/{tot_cnt} Columns Active):**\n\n"
+                    f"{delta_line}"
+                    f"- **Active Subset Scope:** `{detected_step}` has **{sel_cnt}/{tot_cnt}** columns selected{desel_msg}.\n"
+                    f"- **Variance Share Impact:** Accounts for **{step_info['variance_share_pct']}%** of yield variance in your active subset (compared to **{step_info['full_baseline_share_pct']}%** when all 20 `{detected_step}` columns are selected).\n"
+                    f"- **Top Active Knobs in `{detected_step}`:** {top_step_knobs} — placed at **Card #1** below."
                 )
             elif detected_cats:
                 cat = detected_cats[0]
                 matching_cat = [c for c in candidates if any(cat in p for p in c["parameters"])]
                 other_cat = [c for c in candidates if not any(cat in p for p in c["parameters"])]
-                candidates = matching_cat + other_cat
+                if matching_cat:
+                    candidates = matching_cat + other_cat
                 top_c = candidates[0]
+                active_cat_count = sum(1 for c in selected_cols if cat in c)
                 chat_reply = (
-                    f"**Category Scan for `{cat}` Parameters:**\n\n"
-                    f"- Screened `{cat}` sensors across **100 wafers** and surfaced `{top_c['parameters'][0]}` at `#1`.\n"
-                    f"- **Ceteris Paribus Effect:** {top_c.get('ceteris_paribus', '')}\n"
-                    f"- Click **+ Add to Testing Queue** on any of the **{len(candidates)} cards** below."
+                    f"**Category Scan for `{cat}` ({active_cat_count}/20 `{cat}` Columns Active):**\n\n"
+                    f"{delta_line}"
+                    f"{partial_step_line}"
+                    f"- **#1 Active `{cat}` Signal:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
+                    f"- **Rule of Thumb:** {top_c.get('everyday_analogy', '')}"
                 )
             else:
+                top_c = candidates[0]
                 chat_reply = (
-                    f"**Response to:** *{user_message.strip()}*\n\n"
-                    f"- Screened **{len(selected_cols)} obfuscated parameters** across **100 wafers** (`10,000` parameter measurements).\n"
-                    f"- **Top Individual Signal:** `{candidates[0]['parameters'][0]}` ({candidates[0].get('confidence_badge', '')})\n"
-                    f"- **Stage Bottleneck Ranking:** {top_step_str}\n"
-                    f"- Click **+ Add to Testing Queue** on any of the **{len(candidates)} cards** below to test them 1-by-1."
+                    f"**Subset Analysis ({len(selected_cols)}/100 Active Columns):**\n\n"
+                    f"{delta_line}"
+                    f"{partial_step_line}"
+                    f"- **#1 Active Driver:** `{top_c.get('short_title', top_c['title'])}` (**{top_c.get('confidence_hero', '')}** certainty • **{top_c.get('ceteris_paribus_hero', '')}**).\n"
+                    f"- **Active Step Breakdown:** {', '.join(step_pills[:3])}."
                 )
+
+            # Optional Live Gemini LLM synthesis grounded in exact subset telemetry
+            if use_llm:
+                llm_prompt = (
+                    "You are a concise semiconductor process engineering assistant. "
+                    "Using ONLY the obfuscated step/parameter names below (never invent raw step names), "
+                    "write 2 ultra-concise bullet points (<40 words total) answering the engineer's question "
+                    "and explicitly noting how their active column selection affects the numbers.\n"
+                    f"Engineer Question: {user_message.strip()}\n"
+                    f"Grounded Subset Facts:\n{chat_reply}"
+                )
+                llm_text, backing_engine = _invoke_live_llm_agent(llm_prompt, enable_live_llm=True)
+                if llm_text:
+                    chat_reply = chat_reply + f"\n- **Gemini Agent Insight:** {llm_text}"
+            else:
+                backing_engine = "ADK Subset Partial-OLS Agent Engine"
         else:
+            top_c = candidates[0]
+            backing_engine = "ADK Subset Partial-OLS Agent Engine"
             chat_reply = (
-                f"**Auto-Scan Complete ({len(selected_cols)} obfuscated parameters × 100 wafers):**\n\n"
-                f"- Generated **{len(candidates)} candidate hypotheses** covering **Single Parameters**, **2-Way Interactions**, **Static Stage Importance (`STEP_A`)**, and **Baseline Noise Controls**.\n"
-                f"- **Stage Variance Share:** {top_step_str}.\n"
-                f"- Queue as many cards as you like (or click **+ Queue All {len(candidates)} Cards**) and test them 1-by-1!"
+                f"**Active Subset Scan ({len(selected_cols)}/100 Parameters × 100 Wafers):**\n\n"
+                f"{delta_line}"
+                f"{partial_step_line}"
+                f"- **#1 Active Signal:** `{top_c.get('short_title', top_c['title'])}` — **{top_c.get('confidence_hero', '99.9%')}** certainty, **{top_c.get('ceteris_paribus_hero', '')}**.\n"
+                f"- **Active Step Breakdown:** {', '.join(step_pills)}.\n"
             )
 
         payload = {
             "status": "ok",
             "agent": "hypothesis_generator_agent",
+            "agent_backing": backing_engine,
+            "active_columns_count": len(selected_cols),
+            "added_columns_count": len(added_cols),
+            "removed_columns_count": len(removed_cols),
             "chat_reply": chat_reply,
             "candidate_hypotheses": candidates,
             "step_attribution": discovery_bundle["data"]["step_attribution"],
@@ -564,7 +642,6 @@ class ProcessHypothesisMultiAgentApp:
         clean_payload, redactions = self.safety_plugin.check_output_pii(payload)
         clean_payload["redactions_applied"] = redactions
 
-        # Write to `output_key="candidate_hypotheses"` in `session.state` (`day-1b`, p. 7)
         session["state"]["candidate_hypotheses"] = clean_payload["candidate_hypotheses"]
         self.session_service.save_state_and_event(
             session_id=session_id,
@@ -591,7 +668,6 @@ class ProcessHypothesisMultiAgentApp:
             (c for c in candidates if c["hypothesis_id"] == hypothesis_id), None
         )
         if not target:
-            # Allow queueing by parameter or step name directly
             target = {
                 "hypothesis_id": hypothesis_id,
                 "hypothesis_type": "step_level" if hypothesis_id.replace("HYP_STEP_", "") in ("STEP_A", "STEP_B", "STEP_C", "STEP_D", "STEP_E") else "single_parameter",
@@ -625,11 +701,15 @@ class ProcessHypothesisMultiAgentApp:
 
     def run_hypothesis_evaluator_agent_next(
         self,
+        selected_columns: Optional[List[str]] = None,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
-        """Agent 2 (`hypothesis_evaluator_agent`): Pops 1 hypothesis from queue and evaluates it."""
+        """Agent 2 (`hypothesis_evaluator_agent`): Pops 1 hypothesis from queue and evaluates it on active subset."""
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         session = self.session_service.get_or_create_session(session_id=session_id)
+        if selected_columns:
+            session["state"]["selected_columns"] = list(selected_columns)
+        active_cols = session["state"].get("selected_columns") or None
         queue: List[Dict[str, Any]] = session["state"].get("hypothesis_queue", [])
         evaluated: List[Dict[str, Any]] = session["state"].get("evaluated_results", [])
 
@@ -643,10 +723,8 @@ class ProcessHypothesisMultiAgentApp:
                 "trace_id": trace_id,
             }
 
-        # State handoff: set `session.state["current_hypothesis"]` before invoking evaluator
         session["state"]["current_hypothesis"] = next_hyp
 
-        # `before_tool_callback` parameter validation
         tool_Err = self.safety_plugin.validate_tool_params(
             tool_name="evaluate_single_hypothesis",
             tool_args={"hypothesis": next_hyp, "dataset_path": "data/obfuscated_wafers.csv"},
@@ -656,7 +734,11 @@ class ProcessHypothesisMultiAgentApp:
             return tool_Err
 
         def _exec_eval():
-            return evaluate_single_hypothesis(hypothesis=next_hyp, data_dir=self.data_dir)
+            return evaluate_single_hypothesis(
+                hypothesis=next_hyp,
+                selected_columns=active_cols,
+                data_dir=self.data_dir,
+            )
 
         eval_bundle, _ = self.observability.trace_span(
             trace_id=trace_id,
