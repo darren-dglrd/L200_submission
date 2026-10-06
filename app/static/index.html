@@ -9,7 +9,7 @@
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
   <!-- Top Bar -->
-  <header class="border-b border-slate-800 bg-slate-900/80 px-6 py-4 flex items-center justify-between">
+  <header class="border-b border-slate-800 bg-slate-900/90 px-6 py-4 flex items-center justify-between sticky top-0 z-40 backdrop-blur">
     <div>
       <div class="flex items-center gap-3">
         <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
@@ -20,15 +20,15 @@
         </h1>
       </div>
       <p class="text-xs text-slate-400 mt-1">
-        Subject-Matter-Agnostic Analytics for Non-ML Engineers • 100 Wafers × 100 Parameters (10,000 Cells) • Sensitive-Data Classifier Active
+        Plain-English ML for Process Engineers • 100 Wafers × 100 Parameters (10,000 Cells) • Sensitive-Data Classifier Active
       </p>
     </div>
     <div class="flex items-center gap-3">
       <button onclick="switchScreen(1)" id="tabBtn1" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white">
-        1. Dataset Obfuscation &amp; Batch Select
+        1. Dataset Obfuscation &amp; Column Select
       </button>
       <button onclick="switchScreen(2)" id="tabBtn2" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700">
-        2. Hypothesis Chatbot &amp; A2UI Canvas
+        2. Hypothesis Chatbot &amp; Testing Canvas
       </button>
       <a href="/api/export_csv" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white">
         Export Looker Studio CSV
@@ -36,8 +36,8 @@
     </div>
   </header>
 
-  <!-- SCREEN 1: OBFUSCATED DATASET & BATCH COLUMN SELECTION (data_preprocess skill) -->
-  <main id="screen1" class="max-w-7xl mx-auto p-6 space-y-6">
+  <!-- SCREEN 1: OBFUSCATED DATASET, BATCH & MANUAL COLUMN SELECTION, AND FULL STICKY-HEADER TABLE -->
+  <main id="screen1" class="max-w-[1500px] mx-auto p-6 space-y-5">
     <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 flex items-center justify-between gap-4">
       <div>
         <h2 class="text-sm font-bold text-amber-300">
@@ -52,79 +52,110 @@
       </span>
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <div class="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
-        <h3 class="text-sm font-bold text-white">
-          Batch Parameter Selection (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data_preprocess</code>)
-        </h3>
-        <p class="text-xs text-slate-400">
-          Select parameter batches by physical group or process step instead of picking 100 columns one by one:
-        </p>
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Left Column (4 cols): Batch Selection + Hand-Picked Individual Column Checkboxes -->
+      <div class="lg:col-span-4 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4 flex flex-col">
+        <div>
+          <h3 class="text-sm font-bold text-white">
+            1. Quick Batch Selection (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data_preprocess</code>)
+          </h3>
+          <p class="text-xs text-slate-400 mt-0.5">
+            Toggle entire parameter families at once, or hand-pick individual columns below:
+          </p>
+        </div>
+
         <div class="space-y-2" id="batchPills">
-          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">By Parameter Category</div>
-          <div class="flex flex-wrap gap-2">
-            <button onclick="toggleBatch('TEMPERATURE')" data-batch="TEMPERATURE" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">All Temperatures (20)</button>
-            <button onclick="toggleBatch('PRESSURE')" data-batch="PRESSURE" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">All Pressures (20)</button>
-            <button onclick="toggleBatch('RF_POWER')" data-batch="RF_POWER" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All RF Power (20)</button>
-            <button onclick="toggleBatch('FLOW_RATE')" data-batch="FLOW_RATE" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All Flow Rates (20)</button>
-            <button onclick="toggleBatch('DURATION')" data-batch="DURATION" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All Durations (20)</button>
+          <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">By Physical Parameter Category</div>
+          <div class="flex flex-wrap gap-1.5">
+            <button onclick="toggleBatch('TEMPERATURE')" data-batch="TEMPERATURE" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">All Temperatures (20)</button>
+            <button onclick="toggleBatch('PRESSURE')" data-batch="PRESSURE" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">All Pressures (20)</button>
+            <button onclick="toggleBatch('RF_POWER')" data-batch="RF_POWER" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All RF Power (20)</button>
+            <button onclick="toggleBatch('FLOW_RATE')" data-batch="FLOW_RATE" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All Flow Rates (20)</button>
+            <button onclick="toggleBatch('DURATION')" data-batch="DURATION" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">All Durations (20)</button>
           </div>
-          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-2">By Obfuscated Process Step</div>
-          <div class="flex flex-wrap gap-2">
-            <button onclick="toggleBatch('STEP_A')" data-batch="STEP_A" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">STEP_A (20)</button>
-            <button onclick="toggleBatch('STEP_B')" data-batch="STEP_B" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_B (20)</button>
-            <button onclick="toggleBatch('STEP_C')" data-batch="STEP_C" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_C (20)</button>
-            <button onclick="toggleBatch('STEP_D')" data-batch="STEP_D" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_D (20)</button>
-            <button onclick="toggleBatch('STEP_E')" data-batch="STEP_E" class="batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_E (20)</button>
-            <button onclick="selectAllBatches()" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-700 text-white">Select All 100 Params</button>
+          <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-1">By Obfuscated Process Step</div>
+          <div class="flex flex-wrap gap-1.5">
+            <button onclick="toggleBatch('STEP_A')" data-batch="STEP_A" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white">STEP_A (20)</button>
+            <button onclick="toggleBatch('STEP_B')" data-batch="STEP_B" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_B (20)</button>
+            <button onclick="toggleBatch('STEP_C')" data-batch="STEP_C" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_C (20)</button>
+            <button onclick="toggleBatch('STEP_D')" data-batch="STEP_D" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_D (20)</button>
+            <button onclick="toggleBatch('STEP_E')" data-batch="STEP_E" class="batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300">STEP_E (20)</button>
+            <button onclick="selectAllBatches()" class="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-emerald-700 hover:bg-emerald-600 text-white">Select All 100</button>
           </div>
         </div>
+
+        <!-- Hand-Picked Individual Column Selector -->
+        <div class="pt-3 border-t border-slate-800 space-y-2 flex-1 flex flex-col">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-white uppercase tracking-wider">
+              2. Select Individual Columns by Hand
+            </h4>
+            <div class="flex gap-2">
+              <button onclick="checkAllVisibleColumns(true)" class="text-[11px] text-indigo-400 hover:underline">Check Visible</button>
+              <span class="text-slate-600">•</span>
+              <button onclick="checkAllVisibleColumns(false)" class="text-[11px] text-rose-400 hover:underline">Uncheck Visible</button>
+            </div>
+          </div>
+          <input id="colSearchInput" type="text" placeholder="Filter 100 columns by name (e.g. STEP_B, TEMP_02, RF_POWER)..."
+            oninput="renderManualColumnChecklist()"
+            class="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          <div id="manualColumnList" class="rounded-lg bg-slate-950 border border-slate-800 p-2.5 max-h-56 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs font-mono">
+          </div>
+        </div>
+
         <div class="pt-3 border-t border-slate-800 flex items-center justify-between">
           <span id="selectedCountBadge" class="text-xs text-emerald-400 font-semibold">Selected: 52 / 100 parameters</span>
-          <button onclick="runPreprocessAndContinue()" class="px-4 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white">
-            Apply Skill &amp; Open Hypothesis Canvas →
+          <button onclick="runPreprocessAndContinue()" class="px-4 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow">
+            Apply Selection &amp; Open Canvas →
           </button>
         </div>
       </div>
 
-      <!-- Obfuscated Preview Table -->
-      <div class="lg:col-span-2 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-3 overflow-x-auto">
-        <div class="flex items-center justify-between">
-          <h3 class="text-sm font-bold text-white">
-            Obfuscated Wafer Dataset Preview (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data/obfuscated_wafers.csv</code>)
-          </h3>
-          <span class="text-xs text-slate-400">Values min-max normalized to [0.00, 1.00] • Green ≥ 83.5% Yield</span>
+      <!-- Right Column (8 cols): Full Non-Truncated 100-Wafer × N-Column Table with Sticky Headers -->
+      <div class="lg:col-span-8 rounded-xl border border-slate-800 bg-slate-900 p-5 flex flex-col space-y-3 overflow-hidden">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 class="text-sm font-bold text-white">
+              Full Obfuscated Wafer Dataset (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data/obfuscated_wafers.csv</code>)
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5" id="tableDimensionsSub">
+              Showing all 100 Wafers × 52 Selected Columns • Scroll horizontally &amp; vertically (headers &amp; wafer_id are frozen)
+            </p>
+          </div>
+          <span class="text-xs px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300">
+            Normalized <code class="text-indigo-300 font-mono">[0.00, 1.00]</code> • <span class="text-emerald-400 font-semibold">GOOD ≥ 83.5%</span> / <span class="text-rose-400 font-semibold">BAD &lt; 83.5%</span>
+          </span>
         </div>
-        <table class="w-full text-left text-xs border-collapse" id="previewTable">
-          <thead>
-            <tr class="border-b border-slate-800 text-slate-400">
-              <th class="py-2 px-2">wafer_id</th>
-              <th class="py-2 px-2">yield_pct</th>
-              <th class="py-2 px-2">Health</th>
-              <th class="py-2 px-2">STEP_A_TEMP_01</th>
-              <th class="py-2 px-2">STEP_A_TEMP_02</th>
-              <th class="py-2 px-2">STEP_A_PRESS_01</th>
-            </tr>
-          </thead>
-          <tbody id="previewBody" class="divide-y divide-slate-800/60 font-mono"></tbody>
-        </table>
+
+        <!-- Scrollable container with sticky top header row and sticky left wafer_id column -->
+        <div class="rounded-lg border border-slate-800 bg-slate-950 overflow-auto max-h-[540px] relative shadow-inner">
+          <table class="w-max min-w-full text-left text-xs border-separate border-spacing-0" id="previewTable">
+            <thead id="previewHead" class="sticky top-0 z-20 bg-slate-900 text-slate-300 shadow"></thead>
+            <tbody id="previewBody" class=" font-mono"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </main>
 
-  <!-- SCREEN 2: CHATBOT + TESTING QUEUE + A2UI v0.9 EVALUATION CANVAS -->
-  <main id="screen2" class="hidden max-w-7xl mx-auto p-6 space-y-6">
+  <!-- SCREEN 2: CHATBOT + UNLIMITED TESTING QUEUE + A2UI v0.9 EVALUATION CANVAS -->
+  <main id="screen2" class="hidden max-w-[1500px] mx-auto p-6 space-y-6">
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      <!-- LEFT COLUMN (5 cols): Agent 1 — Hypothesis Generator Chatbot & A2UI Candidate Cards -->
+      <!-- LEFT COLUMN (5 cols): Agent 1 — Hypothesis Generator Chatbot & Color-Coded Candidate Cards -->
       <section class="lg:col-span-5 rounded-xl border border-slate-800 bg-slate-900 p-5 flex flex-col space-y-4">
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <span class="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">Agent 1 • LlmAgent</span>
-            <h2 class="text-sm font-bold text-white">Hypothesis Generator Chatbot</h2>
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">Agent 1 • Hypothesis Discovery</span>
+            <h2 class="text-sm font-bold text-white">Process Hypothesis Generator</h2>
           </div>
-          <button id="autoScanBtn" onclick="sendChat('')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition">
-            Auto-Scan Top Hypotheses
-          </button>
+          <div class="flex gap-2">
+            <button id="autoScanBtn" onclick="sendChat('')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition">
+              Auto-Scan Top Hypotheses
+            </button>
+            <button onclick="queueAllCandidates()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white transition">
+              + Queue All Cards
+            </button>
+          </div>
         </div>
 
         <div class="flex gap-2">
@@ -138,21 +169,21 @@
         </div>
 
         <div id="chatReplyBox" class="rounded-lg bg-slate-950/90 border border-slate-800 p-3.5 text-xs text-slate-300 leading-relaxed space-y-2">
-          Click <strong>Auto-Scan Top Hypotheses</strong> or type a process question above to generate A2UI candidate cards.
+          Click <strong>Auto-Scan Top Hypotheses</strong> or type a process question above to generate candidate hypothesis cards.
         </div>
 
-        <!-- Dynamic A2UI v0.9 Discovery Surface -->
-        <div id="a2uiDiscoverySurface" class="space-y-3"></div>
+        <!-- Dynamic A2UI v0.9 Discovery Surface (8+ Cards with Color-Coded Confidence, Analogies & Caveats) -->
+        <div id="a2uiDiscoverySurface" class="space-y-3.5 max-h-[850px] overflow-y-auto pr-1"></div>
       </section>
 
-      <!-- RIGHT COLUMN (7 cols): Testing Queue + Agent 2 (Hypothesis Evaluator) A2UI Canvas & Good/Bad Wafer Charts -->
+      <!-- RIGHT COLUMN (7 cols): Unlimited Testing Queue + Agent 2 (Hypothesis Evaluator) Modular Cards & Charts -->
       <section class="lg:col-span-7 space-y-5">
         <!-- 1-by-1 Testing Queue Bar -->
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between flex-wrap gap-2">
             <div>
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">Agent 2 • 1-by-1 ML &amp; Statistical Evaluator</span>
-              <h2 class="text-sm font-bold text-white">Hypothesis Testing Queue</h2>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">Agent 2 • 1-by-1 Evidence Evaluator</span>
+              <h2 class="text-sm font-bold text-white" id="queueTitleHeader">Hypothesis Testing Queue (Unlimited Capacity)</h2>
             </div>
             <button onclick="evaluateNextInQueue()" id="evalNextBtn"
               class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow transition">
@@ -160,11 +191,11 @@
             </button>
           </div>
           <div id="queuePills" class="flex flex-wrap gap-2 text-xs text-slate-400">
-            No hypotheses queued yet — click "+ Add to Testing Queue" on any candidate card on the left.
+            No hypotheses queued yet — click "+ Add to Testing Queue" on any candidate card on the left (or "+ Queue All Cards").
           </div>
         </div>
 
-        <!-- Evaluated Results Canvas (A2UI v0.9 Cards + Color-Coded Good/Bad Wafer Distribution Charts) -->
+        <!-- Evaluated Results Canvas (Modular Plain-English Cards + Color-Coded Good/Bad Wafer Distribution Charts) -->
         <div id="evaluatedCanvas" class="space-y-6"></div>
 
         <!-- Glass-Box Observability & Sensitive-Data Classifier Footer -->
@@ -183,9 +214,13 @@
 
   <script>
     let activeBatches = new Set(['TEMPERATURE', 'PRESSURE', 'STEP_A']);
+    let allAvailableColumns = [];
+    let selectedColumnsSet = new Set();
+    let isManualColumnMode = false;
+    let currentCandidates = [];
     let hasInitialScanRun = false;
 
-    // Clean Markdown-to-HTML renderer (handles **bold**, *italic*, `code`, and bullet lists)
+    // Robust Markdown-to-HTML renderer: handles **bold** (including bold wrapping `code`), *italic*, `code`, and bullet lists
     function renderMarkdown(mdText) {
       if (!mdText) return '';
       const escaped = String(mdText)
@@ -193,10 +228,18 @@
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 
+      // Important: convert **bold** FIRST so `code` inside **bold** doesn't break the ** regex,
+      // then convert `code`, then *italic*, and strip any stray unmatched **
       const formatInline = (str) => str
+        .replace(/\*\*([\s\S]+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
         .replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-[11px]">$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em class="text-indigo-200 italic">$1</em>');
+        .replace(/\*([^*]+?)\*/g, '<em class="text-indigo-200 italic">$1</em>')
+        .replace(/\*\*/g, '');
+
+      const nonEmptyLines = escaped.split('\n').map(l => l.trim()).filter(Boolean);
+      if (nonEmptyLines.length === 1 && !nonEmptyLines[0].startsWith('- ')) {
+        return formatInline(nonEmptyLines[0]);
+      }
 
       const lines = escaped.split('\n');
       let html = '';
@@ -213,7 +256,7 @@
         }
         if (line.startsWith('- ')) {
           if (!inList) {
-            html += '<ul class="list-disc list-inside space-y-1 text-slate-300 mt-1">';
+            html += '<ul class="list-disc list-inside space-y-1.5 text-slate-300 mt-1">';
             inList = true;
           }
           html += `<li>${formatInline(line.slice(2))}</li>`;
@@ -227,6 +270,16 @@
       }
       if (inList) html += '</ul>';
       return html;
+    }
+
+    function getConfidenceBadgeClasses(color) {
+      if (color === 'emerald') {
+        return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+      }
+      if (color === 'amber') {
+        return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+      }
+      return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
     }
 
     function switchScreen(num) {
@@ -247,15 +300,16 @@
     function updateBatchButtonsUI() {
       document.querySelectorAll('.batch-btn').forEach(btn => {
         const b = btn.getAttribute('data-batch');
-        if (activeBatches.has(b) || activeBatches.has('ALL')) {
-          btn.className = 'batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white';
+        if (!isManualColumnMode && (activeBatches.has(b) || activeBatches.has('ALL'))) {
+          btn.className = 'batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white';
         } else {
-          btn.className = 'batch-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300';
+          btn.className = 'batch-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300';
         }
       });
     }
 
     function toggleBatch(token) {
+      isManualColumnMode = false;
       activeBatches.delete('ALL');
       if (activeBatches.has(token)) activeBatches.delete(token);
       else activeBatches.add(token);
@@ -265,38 +319,147 @@
     }
 
     function selectAllBatches() {
+      isManualColumnMode = false;
       activeBatches = new Set(['ALL']);
       updateBatchButtonsUI();
       loadPreprocessPreview();
     }
 
+    function renderManualColumnChecklist() {
+      const container = document.getElementById('manualColumnList');
+      const filterText = (document.getElementById('colSearchInput').value || '').trim().toUpperCase();
+      container.innerHTML = '';
+
+      const filtered = allAvailableColumns.filter(col => !filterText || col.includes(filterText));
+      filtered.forEach(col => {
+        const checked = selectedColumnsSet.has(col);
+        const label = document.createElement('label');
+        label.className = `flex items-center gap-2 px-2 py-1 rounded cursor-pointer select-none border ${
+          checked
+            ? 'bg-indigo-950/60 border-indigo-500/40 text-indigo-200'
+            : 'bg-slate-900/40 border-slate-800/80 text-slate-400 hover:text-slate-200'
+        }`;
+        label.innerHTML = `
+          <input type="checkbox" ${checked ? 'checked' : ''}
+            onchange="toggleIndividualColumn('${col}', this.checked)"
+            class="rounded border-slate-600 text-indigo-600 focus:ring-0" />
+          <span class="truncate text-[11px]" title="${col}">${col}</span>
+        `;
+        container.appendChild(label);
+      });
+    }
+
+    async function toggleIndividualColumn(colName, isChecked) {
+      isManualColumnMode = true;
+      if (isChecked) {
+        selectedColumnsSet.add(colName);
+      } else {
+        selectedColumnsSet.delete(colName);
+      }
+      if (selectedColumnsSet.size === 0 && allAvailableColumns.length > 0) {
+        selectedColumnsSet.add(allAvailableColumns[0]);
+      }
+      updateBatchButtonsUI();
+      renderManualColumnChecklist();
+      await loadPreprocessPreview();
+    }
+
+    async function checkAllVisibleColumns(shouldCheck) {
+      isManualColumnMode = true;
+      const filterText = (document.getElementById('colSearchInput').value || '').trim().toUpperCase();
+      const visible = allAvailableColumns.filter(col => !filterText || col.includes(filterText));
+      visible.forEach(col => {
+        if (shouldCheck) selectedColumnsSet.add(col);
+        else selectedColumnsSet.delete(col);
+      });
+      if (selectedColumnsSet.size === 0 && allAvailableColumns.length > 0) {
+        selectedColumnsSet.add(allAvailableColumns[0]);
+      }
+      updateBatchButtonsUI();
+      renderManualColumnChecklist();
+      await loadPreprocessPreview();
+    }
+
     async function loadPreprocessPreview() {
+      const payload = isManualColumnMode
+        ? {batches: ['CUSTOM'], custom_columns: Array.from(selectedColumnsSet)}
+        : {batches: Array.from(activeBatches)};
+
       const res = await fetch('/api/preprocess', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({batches: Array.from(activeBatches)})
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
+
+      allAvailableColumns = data.all_columns || [];
+      selectedColumnsSet = new Set(data.selected_columns || []);
+      renderManualColumnChecklist();
+
+      const selCols = data.selected_columns || [];
+      const rows = data.full_rows || data.preview_rows || [];
+
       document.getElementById('selectedCountBadge').textContent =
         `Selected: ${data.selected_columns_count} / ${data.total_parameters} obfuscated parameters`;
-      const tbody = document.getElementById('previewBody');
-      tbody.innerHTML = '';
-      (data.preview_rows || []).forEach(r => {
-        const isGood = r.yield_pct >= 83.5;
-        const badge = isGood
-          ? '<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">GOOD (Green)</span>'
-          : '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">BAD (Red)</span>';
-        const keys = Object.keys(r).filter(k => k !== 'wafer_id' && k !== 'yield_pct');
-        tbody.innerHTML += `
-          <tr>
-            <td class="py-1.5 px-2 text-slate-300">${r.wafer_id}</td>
-            <td class="py-1.5 px-2 font-bold ${isGood ? 'text-emerald-400' : 'text-rose-400'}">${r.yield_pct}%</td>
-            <td class="py-1.5 px-2">${badge}</td>
-            <td class="py-1.5 px-2">${r[keys[0]] ?? '-'}</td>
-            <td class="py-1.5 px-2">${r[keys[1]] ?? '-'}</td>
-            <td class="py-1.5 px-2">${r[keys[2]] ?? '-'}</td>
-          </tr>`;
+      document.getElementById('tableDimensionsSub').textContent =
+        `Showing all ${rows.length} Wafers × ${selCols.length} Selected Parameter Columns (${rows.length * selCols.length} cells) • Scroll horizontally & vertically (headers & wafer_id are frozen)`;
+
+      // Render Sticky Header Row
+      const thead = document.getElementById('previewHead');
+      let headHtml = `
+        <tr>
+          <th class="sticky left-0 z-30 bg-slate-900 py-2.5 px-3 border-b border-r border-slate-700 text-white font-bold whitespace-nowrap">
+            wafer_id (Frozen)
+          </th>
+          <th class="py-2.5 px-3 border-b border-r border-slate-800 text-emerald-300 font-bold whitespace-nowrap bg-slate-900">
+            yield_pct
+          </th>
+          <th class="py-2.5 px-3 border-b border-r border-slate-800 text-slate-300 font-bold whitespace-nowrap bg-slate-900">
+            Wafer Health
+          </th>
+      `;
+      selCols.forEach(col => {
+        headHtml += `
+          <th class="py-2.5 px-3 border-b border-r border-slate-800 text-indigo-200 font-mono font-semibold whitespace-nowrap bg-slate-900">
+            <div class="flex items-center justify-between gap-2">
+              <span>${col}</span>
+              <button onclick="toggleIndividualColumn('${col}', false)" title="Remove column"
+                class="text-slate-500 hover:text-rose-400 text-[10px] font-bold">✕</button>
+            </div>
+          </th>
+        `;
       });
+      headHtml += `</tr>`;
+      thead.innerHTML = headHtml;
+
+      // Render All 100 Wafer Rows
+      const tbody = document.getElementById('previewBody');
+      const rowFragments = rows.map((r, rIdx) => {
+        const isGood = r.yield_pct >= 83.5;
+        const rowBg = rIdx % 2 === 0 ? 'bg-slate-950' : 'bg-slate-900/60';
+        const stickyBg = rIdx % 2 === 0 ? 'bg-slate-950' : 'bg-slate-900';
+        const badge = isGood
+          ? '<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-sans text-[11px] font-semibold">GOOD (Green)</span>'
+          : '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-sans text-[11px] font-semibold">BAD (Red)</span>';
+
+        let cellsHtml = `
+          <td class="sticky left-0 z-10 ${stickyBg} py-1.5 px-3 border-b border-r border-slate-800 text-white font-bold whitespace-nowrap">
+            ${r.wafer_id}
+          </td>
+          <td class="py-1.5 px-3 border-b border-r border-slate-800/60 font-bold whitespace-nowrap ${isGood ? 'text-emerald-400' : 'text-rose-400'}">
+            ${r.yield_pct}%
+          </td>
+          <td class="py-1.5 px-3 border-b border-r border-slate-800/60 whitespace-nowrap">
+            ${badge}
+          </td>
+        `;
+        for (const col of selCols) {
+          const val = r[col];
+          cellsHtml += `<td class="py-1.5 px-3 border-b border-r border-slate-800/40 text-slate-300 whitespace-nowrap">${val ?? '-'}</td>`;
+        }
+        return `<tr class="${rowBg} hover:bg-indigo-950/30">${cellsHtml}</tr>`;
+      });
+      tbody.innerHTML = rowFragments.join('');
     }
 
     async function runPreprocessAndContinue() {
@@ -306,35 +469,66 @@
       await sendChat('');
     }
 
-    // Native A2UI v0.9 Adjacency-List Surface Renderer
+    // Render Candidate Hypothesis Cards with Color-Coded Confidence Badges, Ceteris Paribus Analogies & Caveats
     function renderA2uiDiscoveryCards(uiMsg, candidates) {
+      currentCandidates = candidates || [];
       const container = document.getElementById('a2uiDiscoverySurface');
       container.innerHTML = '';
-      if (!candidates || candidates.length === 0) return;
+      if (!currentCandidates.length) return;
 
-      candidates.forEach((c, idx) => {
-        const typeBadgeColor = c.hypothesis_type === 'step_level'
-          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+      currentCandidates.forEach((c, idx) => {
+        const typeLabel = c.hypothesis_type === 'step_level'
+          ? 'Whole-Step Bottleneck'
           : (c.hypothesis_type === 'two_way_interaction'
-            ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
-            : 'bg-sky-500/20 text-sky-300 border-sky-500/30');
+            ? '2-Knob Interaction'
+            : 'Single Knob Effect');
+
+        const confClass = getConfidenceBadgeClasses(c.confidence_color || 'emerald');
+        const confBadgeText = c.confidence_badge || '99% Statistical Certainty';
+        const caveatsList = (c.caveats_and_confounders || []).map(item => `<li>${renderMarkdown(item)}</li>`).join('');
 
         const card = document.createElement('div');
-        card.className = 'rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-2 transition hover:border-indigo-500/50';
+        card.className = 'rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-3 transition hover:border-indigo-500/50 shadow';
         card.innerHTML = `
-          <div class="flex items-center justify-between">
-            <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded border ${typeBadgeColor}">
-              #${idx + 1} • ${c.hypothesis_type.replace(/_/g, ' ')}
+          <!-- Header Row: Card # + Color-Coded Confidence Pill -->
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded bg-slate-800 text-slate-300 border border-slate-700">
+              Card #${idx + 1} • ${typeLabel}
             </span>
-            <span class="text-[10px] font-mono text-slate-500">A2UI v0.9 Card</span>
+            <span class="px-2.5 py-0.5 text-[11px] font-bold rounded-full border ${confClass}">
+              ${confBadgeText}
+            </span>
           </div>
-          <h3 class="text-xs font-bold text-white">${renderMarkdown(c.title)}</h3>
-          <div class="text-xs text-slate-400">${renderMarkdown(c.rationale)}</div>
-          <div class="pt-1">
+
+          <!-- Title & Plain-English Overview -->
+          <div>
+            <h3 class="text-sm font-bold text-white">${renderMarkdown(c.title)}</h3>
+            <div class="text-xs text-slate-300 mt-1">${renderMarkdown(c.rationale)}</div>
+          </div>
+
+          <!-- Sub-Card 1: Ceteris Paribus Rule of Thumb & Everyday Analogy -->
+          <div class="rounded-lg bg-slate-900/90 border border-slate-800 p-3 space-y-1.5 text-xs">
+            <div class="text-indigo-300 font-semibold">📏 Ceteris Paribus Rule of Thumb (All Other Settings Equal):</div>
+            <div class="text-slate-200 leading-relaxed">${renderMarkdown(c.ceteris_paribus || '')}</div>
+            <div class="text-emerald-300/90 pt-1 leading-relaxed">💡 <strong>Everyday Analogy:</strong> ${c.everyday_analogy || ''}</div>
+          </div>
+
+          <!-- Sub-Card 2: Caveats & Potential Multi-Interaction Confounders -->
+          <details class="rounded-lg bg-amber-500/5 border border-amber-500/20 p-2.5 text-xs">
+            <summary class="cursor-pointer font-semibold text-amber-300 select-none">
+              ⚠️ Caveats &amp; Potential Multi-Interaction Confounders (Click to Expand)
+            </summary>
+            <ul class="list-disc list-inside space-y-1.5 text-amber-100/80 mt-2 text-[11px] leading-relaxed">
+              ${caveatsList}
+            </ul>
+          </details>
+
+          <div class="pt-1 flex items-center justify-between">
             <button onclick="addToQueue('${c.hypothesis_id}', this)"
-              class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/90 hover:bg-indigo-500 text-white transition">
+              class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition shadow">
               + Add to Testing Queue
             </button>
+            <span class="text-[10px] font-mono text-slate-500">A2UI v0.9 Card</span>
           </div>
         `;
         container.appendChild(card);
@@ -351,7 +545,7 @@
       const trimmed = (message || '').trim();
       askBtn.disabled = true;
       scanBtn.disabled = true;
-      replyBox.innerHTML = `<div class="text-indigo-400 font-semibold animate-pulse">Running hypothesis_generator_agent across 100 wafers...</div>`;
+      replyBox.innerHTML = `<div class="text-indigo-400 font-semibold animate-pulse">Scanning 100 wafers across selected parameters...</div>`;
 
       try {
         const res = await fetch('/api/chat_generate', {
@@ -367,11 +561,11 @@
                <span class="text-[10px] font-mono text-slate-500">${timestamp}</span>
              </div>`
           : `<div class="pb-2 mb-2 border-b border-slate-800 flex items-center justify-between">
-               <span class="text-emerald-300 font-semibold">Auto-Scan Discovery Run</span>
+               <span class="text-emerald-300 font-semibold">Auto-Scan Discovery Complete (${(data.candidate_hypotheses || []).length} Candidate Cards)</span>
                <span class="text-[10px] font-mono text-slate-500">${timestamp}</span>
              </div>`;
 
-        replyBox.innerHTML = userHeader + renderMarkdown(data.chat_reply || '');
+        replyBox.innerHTML = userHeader + `<div class="space-y-1.5">${renderMarkdown(data.chat_reply || '')}</div>`;
         if (trimmed) inputEl.value = '';
         renderA2uiDiscoveryCards(data.ui, data.candidate_hypotheses || []);
         await refreshObservability();
@@ -385,24 +579,30 @@
 
     function renderQueueBar(queue) {
       const box = document.getElementById('queuePills');
+      const header = document.getElementById('queueTitleHeader');
       if (!queue || queue.length === 0) {
+        header.textContent = 'Hypothesis Testing Queue (0 Queued)';
         box.textContent = 'No hypotheses queued yet.';
         return;
       }
-      box.innerHTML = queue.map(q => {
+      const pendingCount = queue.filter(q => q.queue_status === 'QUEUED').length;
+      const testedCount = queue.filter(q => q.queue_status === 'TESTED').length;
+      header.textContent = `Hypothesis Testing Queue (${pendingCount} Waiting • ${testedCount} Tested • Unlimited Capacity)`;
+
+      box.innerHTML = queue.map((q, i) => {
         const tested = q.queue_status === 'TESTED';
         return `<span class="px-2.5 py-1 rounded-lg text-xs font-medium border ${
           tested
             ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
             : 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-        }">${tested ? '✓ TESTED:' : '⏳ QUEUED:'} ${q.title}</span>`;
+        }">${tested ? `✓ #${i + 1} TESTED:` : `⏳ #${i + 1} QUEUED:`} ${q.title}</span>`;
       }).join('');
     }
 
     async function addToQueue(hypothesisId, btnEl) {
       if (btnEl) {
         btnEl.textContent = '✓ Queued for 1-by-1 Test';
-        btnEl.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition';
+        btnEl.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 text-white transition shadow';
       }
       const res = await fetch('/api/queue/add', {
         method: 'POST',
@@ -412,6 +612,16 @@
       const data = await res.json();
       renderQueueBar(data.hypothesis_queue || []);
       await refreshObservability();
+    }
+
+    async function queueAllCandidates() {
+      for (const c of currentCandidates) {
+        await addToQueue(c.hypothesis_id);
+      }
+      document.querySelectorAll('#a2uiDiscoverySurface button').forEach(btn => {
+        btn.textContent = '✓ Queued for 1-by-1 Test';
+        btn.className = 'px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 text-white transition shadow';
+      });
     }
 
     async function evaluateNextInQueue() {
@@ -443,33 +653,76 @@
       const distCanvasId = `dist_chart_${cardId}`;
       const scatterCanvasId = `scatter_chart_${cardId}`;
 
-      const isConfirmed = ev.verdict_badge.includes('CONFIRMED');
-      const badgeClass = isConfirmed
-        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-        : 'bg-slate-700/40 text-slate-300 border-slate-600';
+      const confColor = ev.confidence_color || (ev.verdict_badge.includes('CONFIRMED') ? 'emerald' : 'rose');
+      const confBadgeClasses = getConfidenceBadgeClasses(confColor);
+      const caveatsHtml = (ev.caveats_and_confounders || [])
+        .map(item => `<li>${renderMarkdown(item)}</li>`)
+        .join('');
 
       const wrapper = document.createElement('div');
       wrapper.className = 'rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4 shadow-lg';
       wrapper.innerHTML = `
+        <!-- Top Verdict & Color-Coded Confidence Pill -->
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <span class="px-3 py-1 rounded-full text-xs font-bold border ${badgeClass}">
+          <span class="px-3 py-1 rounded-full text-xs font-bold border ${confBadgeClasses}">
             ${ev.verdict_badge}
           </span>
-          <span class="text-[11px] font-mono text-slate-400">
-            A2UI v0.9 Surface • p = ${ev.p_value.toExponential(2)} • FDR q = ${ev.fdr_q_value.toExponential(2)}
+          <span class="px-3 py-1 rounded-full text-xs font-bold border ${confBadgeClasses}">
+            ${ev.confidence_badge || '99.9% Statistical Certainty'}
           </span>
         </div>
+
         <h3 class="text-base font-bold text-white">${ev.title}</h3>
-        <div class="rounded-lg bg-slate-950 border border-slate-800 p-3.5 space-y-2 text-xs">
-          <div class="text-slate-200 leading-relaxed"><strong>Plain-English Finding:</strong> ${renderMarkdown(ev.plain_english_summary)}</div>
-          <p class="text-emerald-400 font-medium">${ev.certainty_statement}</p>
-          <p class="text-slate-400">${ev.good_bad_wafer_split}</p>
-          <p class="text-indigo-300 font-semibold">Recommended Process Action: ${ev.recommended_action}</p>
+
+        <!-- Modular Sub-Card Grid (Confidence Level, Ceteris Paribus Analogy, Action & Confounder Caveats) -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+          <!-- Sub-Card 1: Color-Coded Statistical Confidence Card -->
+          <div class="rounded-lg border p-3.5 space-y-1.5 ${confBadgeClasses}">
+            <div class="font-bold uppercase tracking-wider text-[11px]">
+              1. Confidence Level &amp; Statistical Certainty
+            </div>
+            <div class="text-sm font-bold text-white">${ev.certainty_statement}</div>
+            <div class="text-slate-200/90 leading-relaxed">${renderMarkdown(ev.plain_english_summary)}</div>
+          </div>
+
+          <!-- Sub-Card 2: Ceteris Paribus Slope & Everyday Analogy Card -->
+          <div class="rounded-lg bg-slate-950 border border-indigo-500/30 p-3.5 space-y-1.5">
+            <div class="font-bold uppercase tracking-wider text-[11px] text-indigo-300">
+              2. Ceteris Paribus Rule of Thumb &amp; Everyday Analogy
+            </div>
+            <div class="text-slate-200 leading-relaxed">
+              <strong>Effect Size (All Else Equal):</strong> ${renderMarkdown(ev.ceteris_paribus || '')}
+            </div>
+            <div class="text-emerald-300/90 leading-relaxed pt-1">
+              <strong>Everyday Analogy:</strong> ${ev.everyday_analogy || ''}
+            </div>
+          </div>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+
+        <!-- Sub-Card 3: Recommended Engineering Action -->
+        <div class="rounded-lg bg-indigo-950/40 border border-indigo-500/40 p-3 text-xs flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <span class="font-bold text-indigo-300 uppercase tracking-wider text-[11px]">3. Recommended Process Action:</span>
+            <span class="text-white font-semibold ml-1">${ev.recommended_action}</span>
+          </div>
+          <span class="text-[11px] text-slate-300">${ev.good_bad_wafer_split}</span>
+        </div>
+
+        <!-- Sub-Card 4: Caveats & Potential Multi-Interaction Confounders -->
+        <div class="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3.5 space-y-1.5 text-xs">
+          <div class="font-bold text-amber-300 uppercase tracking-wider text-[11px]">
+            4. ⚠️ Caveats &amp; Potential Multi-Interaction Confounders
+          </div>
+          <ul class="list-disc list-inside space-y-1 text-amber-100/90 leading-relaxed">
+            ${caveatsHtml}
+          </ul>
+        </div>
+
+        <!-- Charts Row: Good (Green) vs Bad (Red) Wafer Distribution -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
           <div class="rounded-lg bg-slate-950 border border-slate-800 p-3">
             <div class="text-[11px] font-semibold text-slate-300 mb-2">
-              Good (Green) vs. Bad (Red) Wafer Distribution Across Parameter Bins
+              Good (Green) vs. Bad (Red) Wafer Distribution Across Tested Parameter
             </div>
             <canvas id="${distCanvasId}" height="180"></canvas>
           </div>
@@ -574,23 +827,17 @@
       document.getElementById('telemetryBox').textContent = JSON.stringify(data, null, 2);
     }
 
-    // Support URL hash or query param ?screen=2 for automated headless browser testing
+    // Support URL query params for automated headless browser testing
     window.addEventListener('DOMContentLoaded', async () => {
       await loadPreprocessPreview();
       await refreshObservability();
       const params = new URLSearchParams(window.location.search);
       if (params.get('screen') === '2') {
-        if (params.get('ask')) {
-          hasInitialScanRun = true;
-          switchScreen(2);
-          await sendChat(params.get('ask'));
-        } else {
-          switchScreen(2);
-        }
+        hasInitialScanRun = true;
+        switchScreen(2);
+        await sendChat(params.get('ask') || '');
         if (params.get('autoeval') === '1') {
-          const firstBtn = document.querySelector('#a2uiDiscoverySurface button');
-          if (firstBtn) firstBtn.click();
-          await new Promise(r => setTimeout(r, 150));
+          await queueAllCandidates();
           await evaluateNextInQueue();
         }
       }

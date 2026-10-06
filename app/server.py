@@ -84,6 +84,7 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
             html_bytes = (STATIC_DIR / "index.html").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Content-Length", str(len(html_bytes)))
             self.send_header("Connection", "close")
             self.end_headers()
@@ -116,7 +117,10 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/api/preprocess":
             batches = body.get("batches", ["ALL"])
-            res = GLOBAL_APP.preprocess_dataset(batches=batches, session_id=session_id)
+            custom_cols = body.get("custom_columns")
+            res = GLOBAL_APP.preprocess_dataset(
+                batches=batches, custom_columns=custom_cols, session_id=session_id
+            )
             self._send_json(res)
             return
 

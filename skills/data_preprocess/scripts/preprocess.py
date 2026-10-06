@@ -191,9 +191,10 @@ def generate_wafer_dataset(
 
 def obfuscate_and_select_batches(
     batches: Optional[List[str]] = None,
+    custom_columns: Optional[List[str]] = None,
     data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Obfuscate confidential columns, normalize values to [0, 1], and filter by batch selection."""
+    """Obfuscate confidential columns, normalize values to [0, 1], and filter by batch or hand-picked columns."""
     target_dir = data_dir or DATA_DIR
     raw_csv_path = target_dir / "raw_wafers.csv"
     if not raw_csv_path.exists():
@@ -233,9 +234,14 @@ def obfuscate_and_select_batches(
         writer.writeheader()
         writer.writerows(obf_rows)
 
-    # Batch selection logic
+    # Column selection logic: either explicit hand-picked custom_columns OR batch tokens
     requested_batches = [b.upper().strip() for b in (batches or ["ALL"]) if b.strip()]
-    if not requested_batches or "ALL" in requested_batches:
+    if custom_columns is not None and len(custom_columns) > 0:
+        valid_set = set(all_obf_cols)
+        selected_cols = [c for c in custom_columns if c in valid_set]
+        if not selected_cols:
+            selected_cols = list(all_obf_cols)
+    elif not requested_batches or "ALL" in requested_batches:
         selected_cols = list(all_obf_cols)
     else:
         selected_cols = []
@@ -266,22 +272,34 @@ def obfuscate_and_select_batches(
         for row in obf_rows[:8]
     ]
 
+    full_rows = [
+        {
+            "wafer_id": row["wafer_id"],
+            "yield_pct": row["yield_pct"],
+            **{c: row[c] for c in selected_cols},
+        }
+        for row in obf_rows
+    ]
+
     result = {
         "status": "success",
         "obfuscated_csv_path": str(obf_csv_path),
         "num_wafers": len(obf_rows),
         "total_parameters": len(all_obf_cols),
         "total_parameter_cells": len(obf_rows) * len(all_obf_cols),
+        "all_columns": all_obf_cols,
         "selected_batches": requested_batches,
         "selected_columns_count": len(selected_cols),
         "selected_columns": selected_cols,
         "redacted_fields": ["RECIPE_ID"],
         "step_aliases": {v: "CONFIDENTIAL_PROCESS_STEP" for v in STEP_OBFUSCATION_MAP.values()},
+        "batch_catalog": batch_catalog,
         "batch_catalog_counts": {
             **{cat: len(cols) for cat, cols in batch_catalog["By Parameter Type"].items()},
             **{step: len(cols) for step, cols in batch_catalog["By Obfuscated Process Step"].items()},
         },
         "preview_rows": preview_rows,
+        "full_rows": full_rows,
     }
     return result
 
