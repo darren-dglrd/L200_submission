@@ -177,10 +177,12 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/feature_selection":
             sel_cols = body.get("selected_columns")
             top_k = int(body.get("top_k_cutoff", 5))
+            bypass_sub = bool(body.get("bypass_subsample", False))
             res = GLOBAL_APP.run_multi_model_feature_selection_agent(
                 selected_columns=sel_cols,
                 top_k_cutoff=top_k,
                 dataset_id=dataset_id,
+                bypass_subsample=bypass_sub,
                 session_id=session_id,
             )
             self._send_json(res)

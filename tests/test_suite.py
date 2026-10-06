@@ -592,8 +592,31 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
         self.assertEqual(fs_data["global_top_features"][0]["column"], "STEP_D_PRESSURE_01")
         self.assertEqual(fs_data["global_top_features"][0]["models_in_top_k"], 5)
 
+        # 4. Verify Screen 3 Parameter Selector subsetting: dropping STEP_D_PRESSURE_01 on Screen 3
+        #    re-runs the 5 ML models on the remaining 99 columns and promotes STEP_D_DURATION_01 to #1
+        cols_without_top = [c for c in pre_p1["all_columns"] if c != "STEP_D_PRESSURE_01"]
+        fs_50k_dropped = app.run_multi_model_feature_selection_agent(
+            selected_columns=cols_without_top,
+            top_k_cutoff=5,
+            dataset_id="lot_delta_50k",
+            session_id="sess_50k",
+        )
+        fs_dropped_data = fs_50k_dropped["feature_selection"]
+        self.assertEqual(fs_dropped_data["active_columns_count"], 99)
+        self.assertEqual(fs_dropped_data["total_cells_analyzed"], 50000 * 99)
+        self.assertNotIn(
+            "STEP_D_PRESSURE_01",
+            [f["column"] for f in fs_dropped_data["global_top_features"]],
+        )
+        self.assertIn(
+            fs_dropped_data["global_top_features"][0]["column"],
+            ("STEP_D_RF_POWER_01", "STEP_D_DURATION_01"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

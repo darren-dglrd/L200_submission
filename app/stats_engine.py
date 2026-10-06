@@ -1734,6 +1734,7 @@ def run_multi_model_feature_selection(
     top_k_cutoff: int = 5,
     dataset_id: str = "lot_alpha",
     data_dir: Optional[Path] = None,
+    bypass_subsample: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate hypotheses and active parameters across 5 ML feature selection models.
 
@@ -1743,6 +1744,9 @@ def run_multi_model_feature_selection(
     t0 = time.perf_counter()
     ds_key = normalize_dataset_id(dataset_id)
     ds_meta = DATASET_CATALOG[ds_key]
+    if bypass_subsample:
+        _OBF_ROWS_CACHE.pop(str((data_dir or DATA_DIR) / ds_meta["obf_filename"]), None)
+        _OBF_BASE_STATS_CACHE.clear()
     rows = _load_obfuscated_rows(data_dir=data_dir, dataset_id=ds_key)
     all_param_cols = [k for k in rows[0].keys() if k not in ("wafer_id", "yield_pct") and not k.startswith("_")]
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
@@ -1766,8 +1770,8 @@ def run_multi_model_feature_selection(
     full_abs_r = {c: abs(full_base_stats[c]["r"]) for c in cols if c in full_base_stats}
     full_stump = {c: full_base_stats[c]["ml_importance"] for c in cols if c in full_base_stats}
 
-    # Use stratified 1,500-wafer subsample for iterative ensemble updates on 50k dataset
-    work_rows = _get_work_rows(rows, max_rows=1500)
+    # Use stratified 1,500-wafer subsample for interactive mode, or all 50,000 rows when bypass_subsample=True
+    work_rows = rows if bypass_subsample else _get_work_rows(rows, max_rows=1500)
     work_ys = [r["yield_pct"] for r in work_rows]
 
     # 1. Build feature vectors for all active columns + synthetic hypothesis vectors in a single pass

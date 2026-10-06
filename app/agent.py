@@ -938,11 +938,13 @@ class ProcessHypothesisMultiAgentApp:
         selected_columns: Optional[List[str]] = None,
         top_k_cutoff: int = 5,
         dataset_id: Optional[str] = None,
+        bypass_subsample: bool = False,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
         """Screen 3 Agent: Runs 5 ML feature selection models across queued & candidate hypotheses."""
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         session = self.session_service.get_or_create_session(session_id=session_id)
+        prev_cols = list(session["state"].get("selected_columns") or [])
         if selected_columns:
             session["state"]["selected_columns"] = list(selected_columns)
         active_cols = session["state"].get("selected_columns") or None
@@ -952,16 +954,13 @@ class ProcessHypothesisMultiAgentApp:
         queue: List[Dict[str, Any]] = list(session["state"].get("hypothesis_queue", []))
         candidates: List[Dict[str, Any]] = list(session["state"].get("candidate_hypotheses", []))
 
-        # Combine queued hypotheses first, followed by candidate hypotheses from the current dataset
-        combined_hyps: List[Dict[str, Any]] = []
-        seen_ids = set()
-        for q in queue:
-            if q["hypothesis_id"] not in seen_ids:
-                combined_hyps.append(q)
-                seen_ids.add(q["hypothesis_id"])
-
-        # Re-discover fresh candidates on `active_ds` if candidates are empty or from a different dataset
-        if not candidates or any(c.get("dataset_id") not in (None, active_ds) for c in candidates):
+        # Always re-discover fresh candidates on (active_cols, active_ds) when subset or dataset changes
+        cols_changed = bool(active_cols and set(active_cols) != set(prev_cols))
+        if (
+            cols_changed
+            or not candidates
+            or any(c.get("dataset_id") not in (None, active_ds) for c in candidates)
+        ):
             disc = discover_candidate_hypotheses(
                 selected_columns=active_cols,
                 top_k=8,
@@ -970,6 +969,18 @@ class ProcessHypothesisMultiAgentApp:
             )
             candidates = disc["data"]["candidate_hypotheses"]
             session["state"]["candidate_hypotheses"] = candidates
+
+        # Combine queued hypotheses first (whose parameters are still active), followed by active subset candidates
+        active_set = set(active_cols) if active_cols else set()
+        combined_hyps: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for q in queue:
+            q_params = q.get("parameters", [])
+            # Keep queued item if it is a step-level hypothesis or its parameters are in active_set
+            if not active_set or q.get("hypothesis_type") == "step_level" or all(p in active_set for p in q_params):
+                if q["hypothesis_id"] not in seen_ids:
+                    combined_hyps.append(q)
+                    seen_ids.add(q["hypothesis_id"])
 
         for c in candidates:
             if c["hypothesis_id"] not in seen_ids:
@@ -983,6 +994,7 @@ class ProcessHypothesisMultiAgentApp:
                 top_k_cutoff=top_k_cutoff,
                 dataset_id=active_ds,
                 data_dir=self.data_dir,
+                bypass_subsample=bypass_subsample,
             )
 
         fs_bundle, _ = self.observability.trace_span(
@@ -992,12 +1004,26 @@ class ProcessHypothesisMultiAgentApp:
             fn=_exec_fs,
             attributes={
                 "dataset_id": active_ds,
+                "active_columns_count": len(active_cols or []),
                 "hypotheses_count": len(combined_hyps),
                 "top_k_cutoff": top_k_cutoff,
+                "bypass_subsample": bypass_subsample,
             },
         )
 
         clean_bundle, redactions = self.safety_plugin.check_output_pii(fs_bundle)
+        self.session_service.save_state_and_event(
+            session_id=session_id,
+            state=session["state"],
+            author="feature_selection_agent",
+            role="model",
+            content={
+                "dataset_id": active_ds,
+                "active_columns_count": len(active_cols or []),
+                "top_k_cutoff": top_k_cutoff,
+            },
+            compaction_config=self.compaction_config,
+        )
         return {
             "status": "ok",
             "agent": "feature_selection_agent",

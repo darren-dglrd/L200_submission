@@ -493,29 +493,94 @@
     <!-- ================================================================== -->
     <section id="screen3" class="hidden space-y-4">
 
-      <!-- Screen 3 Top Control Bar -->
-      <div class="bp-card px-4 py-3 flex items-center justify-between flex-wrap gap-3">
-        <div class="flex items-center gap-2.5 flex-wrap">
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold intent-blue">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 12h3v3H2v-3zm5-5h3v8H7V7zm5-5h3v13h-3V2z"/></svg>
-            5-Model Ensemble Feature Selector
-          </span>
-          <span id="fsDatasetBadge" class="text-xs font-bold text-[#1C2127]">
-            1. Lot Alpha (STEP_A Thermal) • 52/100 Active Columns
-          </span>
+      <!-- Screen 3 Top Control & Interactive Parameter Selector Bar -->
+      <div class="bp-card p-4 space-y-3">
+        <!-- Row 1: Title, Active Dataset/Telemetry Badge, Full-Scan Toggle & Top-K Controls -->
+        <div class="flex items-center justify-between flex-wrap gap-3 pb-2.5 border-b border-[#DCE0E5]">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold intent-blue">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 12h3v3H2v-3zm5-5h3v8H7V7zm5-5h3v13h-3V2z"/></svg>
+              5-Model Ensemble Feature Selector
+            </span>
+            <span id="fsDatasetBadge" class="text-xs font-bold text-[#1C2127]">
+              1. Lot Alpha (STEP_A Thermal) • 52/100 Active Columns
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap">
+            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-[#F6F7F9] text-[#1C2127] border border-[#DCE0E5] cursor-pointer select-none"
+              title="When checked on 50,000-wafer Lot Delta, bypasses the 3,000-wafer stratified fast-interactive subsample and runs all 5 ML models across all 50,000 rows">
+              <input id="fsBypassSubsampleToggle" type="checkbox" onchange="runMultiModelFeatureSelection()" class="rounded accent-[#2D72D2]" />
+              <span>Full 50k Scan (No Subsample)</span>
+            </label>
+            <span class="text-xs font-bold text-[#5F6B7C] uppercase ml-1">Top-K:</span>
+            <button onclick="setTopKAndRun(3)" id="topKBtn3" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 3</button>
+            <button onclick="setTopKAndRun(5)" id="topKBtn5" class="px-2.5 py-1 rounded text-xs bp-btn-primary">Top 5 (Default)</button>
+            <button onclick="setTopKAndRun(10)" id="topKBtn10" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 10</button>
+            <button onclick="runMultiModelFeatureSelection()"
+              class="px-3 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M13.65 2.35A8 8 0 1016 8h-2a6 6 0 11-1.76-4.24L10 6h6V0l-2.35 2.35z"/></svg>
+              Run 5 ML Models
+            </button>
+          </div>
         </div>
 
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-bold text-[#5F6B7C] uppercase">Top-K Threshold:</span>
-          <button onclick="setTopKAndRun(3)" id="topKBtn3" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 3</button>
-          <button onclick="setTopKAndRun(5)" id="topKBtn5" class="px-2.5 py-1 rounded text-xs bp-btn-primary">Top 5 (Default)</button>
-          <button onclick="setTopKAndRun(10)" id="topKBtn10" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 10</button>
-          <button onclick="runMultiModelFeatureSelection()"
-            class="px-3 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M13.65 2.35A8 8 0 1016 8h-2a6 6 0 11-1.76-4.24L10 6h6V0l-2.35 2.35z"/></svg>
-            Run 5 ML Models
-          </button>
+        <!-- Row 2: Interactive Process Stage (STEP_A..STEP_E) & Sensor Category Parameter Selectors -->
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 text-xs">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="font-bold text-[#5F6B7C] uppercase tracking-wider mr-1">Stage Subsets:</span>
+            <div id="fsStepSubsetBar" class="flex items-center gap-1.5 flex-wrap">
+              <!-- Populated dynamically with STEP_A..STEP_E interactive pills -->
+            </div>
+          </div>
+
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="font-bold text-[#5F6B7C] uppercase tracking-wider mr-1">Sensor Categories:</span>
+            <button onclick="toggleBatchOnScreen3('TEMPERATURE')" data-fs-batch="TEMPERATURE" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default">TEMP (20)</button>
+            <button onclick="toggleBatchOnScreen3('PRESSURE')" data-fs-batch="PRESSURE" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default">PRESSURE (20)</button>
+            <button onclick="toggleBatchOnScreen3('RF_POWER')" data-fs-batch="RF_POWER" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default">RF_POWER (20)</button>
+            <button onclick="toggleBatchOnScreen3('FLOW_RATE')" data-fs-batch="FLOW_RATE" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default">FLOW_RATE (20)</button>
+            <button onclick="toggleBatchOnScreen3('DURATION')" data-fs-batch="DURATION" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default">DURATION (20)</button>
+            <button onclick="selectAllBatchesOnScreen3()" data-fs-batch="ALL" class="fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-primary">ALL 100 COLS</button>
+          </div>
         </div>
+
+        <!-- Row 3: Expandable Hand-Pick Individual Parameters (100 Columns) Drawer -->
+        <details id="fsColumnPickerDetails" class="group rounded border border-[#DCE0E5] bg-[#F6F7F9]">
+          <summary class="px-3 py-2 cursor-pointer select-none flex items-center justify-between text-xs font-bold text-[#1C2127] list-none">
+            <div class="flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 text-[#2D72D2] transition-transform group-open:rotate-90" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6 3l5 5-5 5V3z"/>
+              </svg>
+              <span>Hand-Pick Individual Process Parameters for 5-Model Feature Selection (100 Columns)</span>
+              <span id="fsSelectedColCountBadge" class="px-2 py-0.5 rounded text-[11px] font-bold intent-blue">
+                52 / 100 Selected
+              </span>
+            </div>
+            <span class="text-[11px] font-semibold text-[#2D72D2] underline">
+              Click to expand / filter individual columns
+            </span>
+          </summary>
+
+          <div class="p-3 border-t border-[#DCE0E5] bg-white space-y-2.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <input id="fsColSearchInput" type="text" oninput="renderFsManualColumnChecklist()"
+                placeholder="Filter 100 parameters (e.g. STEP_D_DURATION, RF_POWER_01)..."
+                class="flex-1 min-w-[220px] bg-white border border-[#DCE0E5] rounded px-2.5 py-1 text-xs text-[#1C2127] focus:outline-none focus:border-[#2D72D2]" />
+              <div class="flex items-center gap-1.5">
+                <button onclick="selectAllManualColumnsOnScreen3()" class="px-2.5 py-1 rounded text-xs bp-btn-default">Select All (100)</button>
+                <button onclick="clearManualColumnsOnScreen3()" class="px-2.5 py-1 rounded text-xs bp-btn-default">Clear All</button>
+                <button onclick="runMultiModelFeatureSelection()" class="px-3 py-1 rounded text-xs bp-btn-primary font-bold">
+                  Apply Subset &amp; Re-Run 5 ML Models
+                </button>
+              </div>
+            </div>
+            <div id="fsManualColumnList"
+              class="max-h-44 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1 p-1.5 rounded bg-[#F6F7F9] border border-[#DCE0E5] text-[11px] font-mono">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </details>
       </div>
 
       <!-- 3 Hero KPI Summary Cards (Numbers take up 70+% of card space) -->
@@ -791,6 +856,14 @@
           btn.className = 'batch-btn px-2 py-1 rounded text-xs font-semibold bp-btn-default';
         }
       });
+      document.querySelectorAll('.fs-batch-btn').forEach(btn => {
+        const b = btn.getAttribute('data-fs-batch');
+        if (!isManualColumnMode && (activeBatches.has(b) || activeBatches.has('ALL'))) {
+          btn.className = 'fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-primary';
+        } else {
+          btn.className = 'fs-batch-btn px-2 py-0.5 rounded text-[11px] font-semibold bp-btn-default';
+        }
+      });
     }
 
     function toggleBatch(token) {
@@ -812,6 +885,27 @@
       loadPreprocessPreview();
     }
 
+    async function toggleBatchOnScreen3(token) {
+      isManualColumnMode = false;
+      subsetDirty = true;
+      activeBatches.delete('ALL');
+      if (activeBatches.has(token)) activeBatches.delete(token);
+      else activeBatches.add(token);
+      if (activeBatches.size === 0) activeBatches.add('ALL');
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
+    async function selectAllBatchesOnScreen3() {
+      isManualColumnMode = false;
+      subsetDirty = true;
+      activeBatches = new Set(['ALL']);
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
     function toggleIndividualColumn(colName, checked) {
       isManualColumnMode = true;
       subsetDirty = true;
@@ -822,6 +916,31 @@
       }
       updateBatchButtonsUI();
       loadPreprocessPreview();
+    }
+
+    async function toggleIndividualColumnOnScreen3(colName, checked) {
+      isManualColumnMode = true;
+      subsetDirty = true;
+      if (checked) selectedColumnsSet.add(colName);
+      else selectedColumnsSet.delete(colName);
+      if (selectedColumnsSet.size === 0 && allAvailableColumns.length > 0) {
+        selectedColumnsSet.add(allAvailableColumns[0]);
+      }
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
+    async function dropColumnAndRerunFs(colName) {
+      isManualColumnMode = true;
+      subsetDirty = true;
+      selectedColumnsSet.delete(colName);
+      if (selectedColumnsSet.size === 0 && allAvailableColumns.length > 0) {
+        selectedColumnsSet.add(allAvailableColumns[0]);
+      }
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
     }
 
     async function quickModifyStepOnScreen2(stepName, mode) {
@@ -844,6 +963,28 @@
       await sendChat(`Check ${stepName} with updated column selection`);
     }
 
+    async function quickModifyStepOnScreen3(stepName, mode) {
+      isManualColumnMode = true;
+      subsetDirty = true;
+      const stepCols = allAvailableColumns.filter(c => c.startsWith(stepName + '_'));
+      if (mode === 'half') {
+        stepCols.forEach((c, idx) => {
+          if (idx < 8) selectedColumnsSet.delete(c);
+          else selectedColumnsSet.add(c);
+        });
+      } else if (mode === 'all') {
+        stepCols.forEach(c => selectedColumnsSet.add(c));
+      } else if (mode === 'none') {
+        stepCols.forEach(c => selectedColumnsSet.delete(c));
+        if (selectedColumnsSet.size === 0 && allAvailableColumns.length > 0) {
+          selectedColumnsSet.add(allAvailableColumns[0]);
+        }
+      }
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
     function selectAllManualColumns() {
       isManualColumnMode = true;
       subsetDirty = true;
@@ -860,48 +1001,122 @@
       loadPreprocessPreview();
     }
 
+    async function selectAllManualColumnsOnScreen3() {
+      isManualColumnMode = true;
+      subsetDirty = true;
+      selectedColumnsSet = new Set(allAvailableColumns);
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
+    async function clearManualColumnsOnScreen3() {
+      isManualColumnMode = true;
+      subsetDirty = true;
+      selectedColumnsSet = new Set(allAvailableColumns.slice(0, 5));
+      updateBatchButtonsUI();
+      await loadPreprocessPreview();
+      await runMultiModelFeatureSelection();
+    }
+
     function renderManualColumnChecklist() {
       const container = document.getElementById('manualColumnList');
+      if (container) {
+        const filter = (document.getElementById('colSearchInput')?.value || '').trim().toUpperCase();
+        const filtered = allAvailableColumns.filter(c => !filter || c.includes(filter));
+
+        container.innerHTML = filtered.map(col => {
+          const checked = selectedColumnsSet.has(col);
+          return `
+            <label class="flex items-center gap-2 px-2 py-1 rounded cursor-pointer select-none ${
+              checked ? 'bg-[#EDF3FB] text-[#2D72D2] font-semibold' : 'text-[#5F6B7C] hover:bg-white'
+            }">
+              <input type="checkbox" ${checked ? 'checked' : ''}
+                onchange="toggleIndividualColumn('${col}', this.checked)"
+                class="rounded accent-[#2D72D2]" />
+              <span class="truncate">${col}</span>
+            </label>
+          `;
+        }).join('');
+      }
+      renderFsManualColumnChecklist();
+    }
+
+    function renderFsManualColumnChecklist() {
+      const fsBadge = document.getElementById('fsSelectedColCountBadge');
+      if (fsBadge) {
+        fsBadge.textContent = `${selectedColumnsSet.size} / ${allAvailableColumns.length || 100} Selected`;
+      }
+      const container = document.getElementById('fsManualColumnList');
       if (!container) return;
-      const filter = (document.getElementById('colSearchInput')?.value || '').trim().toUpperCase();
+      const filter = (document.getElementById('fsColSearchInput')?.value || '').trim().toUpperCase();
       const filtered = allAvailableColumns.filter(c => !filter || c.includes(filter));
 
       container.innerHTML = filtered.map(col => {
         const checked = selectedColumnsSet.has(col);
         return `
-          <label class="flex items-center gap-2 px-2 py-1 rounded cursor-pointer select-none ${
+          <label class="flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer select-none ${
             checked ? 'bg-[#EDF3FB] text-[#2D72D2] font-semibold' : 'text-[#5F6B7C] hover:bg-white'
           }">
             <input type="checkbox" ${checked ? 'checked' : ''}
-              onchange="toggleIndividualColumn('${col}', this.checked)"
+              onchange="toggleIndividualColumnOnScreen3('${col}', this.checked)"
               class="rounded accent-[#2D72D2]" />
-            <span class="truncate">${col}</span>
+            <span class="truncate" title="${col}">${col}</span>
           </label>
         `;
       }).join('');
     }
 
     function renderStepSubsetBar() {
-      const bar = document.getElementById('stepSubsetBar');
-      if (!bar || !allAvailableColumns.length) return;
+      if (!allAvailableColumns.length) return;
       const steps = ['STEP_A', 'STEP_B', 'STEP_C', 'STEP_D', 'STEP_E'];
-      bar.innerHTML = steps.map(s => {
-        const total = allAvailableColumns.filter(c => c.startsWith(s + '_')).length;
-        const active = Array.from(selectedColumnsSet).filter(c => c.startsWith(s + '_')).length;
-        const badgeCls = active === total
-          ? 'intent-blue'
-          : (active > 0 ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
-        return `
-          <div class="inline-flex items-center rounded border px-2 py-0.5 gap-1.5 ${badgeCls}">
-            <span class="font-bold">${s}: ${active}/${total}</span>
-            <button onclick="quickModifyStepOnScreen2('${s}', '${active === total ? 'half' : 'all'}')"
-              title="Click to toggle between partial (${s} 12/20) and full (${s} 20/20) column subset"
-              class="text-[10px] underline font-semibold hover:opacity-80">
-              ${active === total ? 'Drop 8 Cols' : 'Restore 20'}
-            </button>
-          </div>
-        `;
-      }).join('');
+
+      const bar = document.getElementById('stepSubsetBar');
+      if (bar) {
+        bar.innerHTML = steps.map(s => {
+          const total = allAvailableColumns.filter(c => c.startsWith(s + '_')).length;
+          const active = Array.from(selectedColumnsSet).filter(c => c.startsWith(s + '_')).length;
+          const badgeCls = active === total
+            ? 'intent-blue'
+            : (active > 0 ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
+          return `
+            <div class="inline-flex items-center rounded border px-2 py-0.5 gap-1.5 ${badgeCls}">
+              <span class="font-bold">${s}: ${active}/${total}</span>
+              <button onclick="quickModifyStepOnScreen2('${s}', '${active === total ? 'half' : 'all'}')"
+                title="Click to toggle between partial (${s} 12/20) and full (${s} 20/20) column subset"
+                class="text-[10px] underline font-semibold hover:opacity-80">
+                ${active === total ? 'Drop 8 Cols' : 'Restore 20'}
+              </button>
+            </div>
+          `;
+        }).join('');
+      }
+
+      const fsBar = document.getElementById('fsStepSubsetBar');
+      if (fsBar) {
+        fsBar.innerHTML = steps.map(s => {
+          const total = allAvailableColumns.filter(c => c.startsWith(s + '_')).length;
+          const active = Array.from(selectedColumnsSet).filter(c => c.startsWith(s + '_')).length;
+          const badgeCls = active === total
+            ? 'intent-blue'
+            : (active > 0 ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
+          return `
+            <div class="inline-flex items-center rounded border px-2 py-0.5 gap-1.5 ${badgeCls}">
+              <span class="font-bold">${s}: ${active}/${total}</span>
+              <button onclick="quickModifyStepOnScreen3('${s}', '${active === total ? 'half' : 'all'}')"
+                title="Toggle ${s} between 12/20 and 20/20 columns and re-run 5 ML models"
+                class="text-[10px] underline font-semibold hover:opacity-80">
+                ${active === total ? 'Drop 8' : 'All 20'}
+              </button>
+              <button onclick="quickModifyStepOnScreen3('${s}', '${active > 0 ? 'none' : 'all'}')"
+                title="${active > 0 ? 'Exclude all ' + s + ' columns' : 'Include all ' + s + ' columns'}"
+                class="text-[10px] font-bold hover:opacity-80 ml-0.5">
+                ${active > 0 ? '✕' : '+'}
+              </button>
+            </div>
+          `;
+        }).join('');
+      }
     }
 
     async function loadPreprocessPreview() {
@@ -932,6 +1147,7 @@
       if (bannerEl) bannerEl.textContent = `Active: ${data.dataset_name || dsShort}`;
       renderManualColumnChecklist();
       renderStepSubsetBar();
+      updateBatchButtonsUI();
 
       const rows = data.full_rows || data.preview_rows || [];
       const startRow = (data.row_offset || 0) + 1;
@@ -1416,8 +1632,9 @@
 
     async function runMultiModelFeatureSelection() {
       const container = document.getElementById('fsHypothesesContainer');
+      const bypassSubsample = Boolean(document.getElementById('fsBypassSubsampleToggle')?.checked);
       if (container) {
-        container.innerHTML = `<div class="text-xs text-[#2D72D2] font-semibold animate-pulse p-4">Running L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge &amp; Mutual Information across ${currentTotalRows.toLocaleString()} wafers × ${selectedColumnsSet.size}/100 active columns...</div>`;
+        container.innerHTML = `<div class="text-xs text-[#2D72D2] font-semibold animate-pulse p-4">Running L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge &amp; Mutual Information across ${currentTotalRows.toLocaleString()} wafers × ${selectedColumnsSet.size}/100 active columns${bypassSubsample ? ' (Full 50k Scan Mode)' : ''}...</div>`;
       }
 
       const res = await fetch('/api/feature_selection', {
@@ -1426,7 +1643,8 @@
         body: JSON.stringify({
           selected_columns: Array.from(selectedColumnsSet),
           top_k_cutoff: currentTopKCutoff,
-          dataset_id: currentDatasetId
+          dataset_id: currentDatasetId,
+          bypass_subsample: bypassSubsample
         })
       });
       const payload = await res.json();
@@ -1482,9 +1700,16 @@
                 ${qBadge}
                 <h3 class="text-sm font-bold text-[#1C2127]">${h.short_title}</h3>
               </div>
-              <span class="px-2 py-0.5 rounded text-[11px] font-bold ${intentCls}">
-                ${h.consistency_verdict}
-              </span>
+              <div class="flex items-center gap-1.5">
+                <span class="px-2 py-0.5 rounded text-[11px] font-bold ${intentCls}">
+                  ${h.consistency_verdict}
+                </span>
+                <button onclick="dropColumnAndRerunFs('${h.primary_column}')"
+                  title="Drop ${h.primary_column} from active parameter subset and re-run 5 ML models"
+                  class="px-2 py-0.5 rounded text-[10px] bp-btn-danger">
+                  ✕ Drop Param
+                </button>
+              </div>
             </div>
 
             <!-- Two 70+% Hero KPI Boxes for Each Hypothesis -->
@@ -1540,11 +1765,18 @@
               <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border ${consCls}">${f.consistency_hero}</span>
             </td>
             ${rkCells}
-            <td class="py-1.5 px-2 border-b border-[#DCE0E5] text-center">
-              <button onclick="addToQueue('${f.hypothesis_id}', this)"
-                class="px-2 py-0.5 rounded text-[10px] bp-btn-primary">
-                + Queue
-              </button>
+            <td class="py-1.5 px-2 border-b border-[#DCE0E5] text-center whitespace-nowrap">
+              <div class="inline-flex items-center gap-1">
+                <button onclick="addToQueue('${f.hypothesis_id}', this)"
+                  class="px-2 py-0.5 rounded text-[10px] bp-btn-primary">
+                  + Queue
+                </button>
+                <button onclick="dropColumnAndRerunFs('${f.column}')"
+                  title="Drop ${f.column} and re-run 5 ML models"
+                  class="px-1.5 py-0.5 rounded text-[10px] bp-btn-danger">
+                  ✕ Drop
+                </button>
+              </div>
             </td>
           </tr>
         `;
@@ -1626,6 +1858,10 @@
         }
       } else if (params.get('screen') === '3') {
         hasInitialScanRun = true;
+        if (params.get('open_picker') === '1') {
+          const det = document.getElementById('fsColumnPickerDetails');
+          if (det) det.open = true;
+        }
         await sendChat('');
         await queueAllCandidates();
         switchScreen(3);
@@ -1634,3 +1870,4 @@
   </script>
 </body>
 </html>
+
