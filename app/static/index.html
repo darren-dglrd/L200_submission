@@ -38,23 +38,25 @@
 
   <!-- SCREEN 1: OBFUSCATED DATASET & BATCH COLUMN SELECTION (data_preprocess skill) -->
   <main id="screen1" class="max-w-7xl mx-auto p-6 space-y-6">
-    <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 flex items-center justify-between">
+    <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 flex items-center justify-between gap-4">
       <div>
         <h2 class="text-sm font-bold text-amber-300">
-          Confidential Data Protection Active (`data_preprocess` Agent Skill + `SafetyPlugin` Pre-Response Hook)
+          Confidential Data Protection Active (<code class="px-1.5 py-0.5 rounded bg-slate-900/90 text-amber-200 font-mono text-xs">data_preprocess</code> Agent Skill + <code class="px-1.5 py-0.5 rounded bg-slate-900/90 text-amber-200 font-mono text-xs">SafetyPlugin</code> Pre-Response Hook)
         </h2>
-        <p class="text-xs text-amber-200/80 mt-0.5">
-          Raw Recipe IDs (`RECIPE-8841-UF`) are stripped. Proprietary steps (`UNDERFILL_LAMINATION`, `PLASMA_ETCH`, etc.) are mapped to `STEP_A..STEP_E` and normalized to `[0.0, 1.0]`.
+        <p class="text-xs text-amber-200/80 mt-1 leading-relaxed">
+          Raw Recipe IDs (<code class="px-1 py-0.5 rounded bg-slate-900/80 text-amber-200 font-mono">RECIPE-8841-UF</code>) are stripped. Proprietary steps (<code class="px-1 py-0.5 rounded bg-slate-900/80 text-amber-200 font-mono">UNDERFILL_LAMINATION</code>, <code class="px-1 py-0.5 rounded bg-slate-900/80 text-amber-200 font-mono">PLASMA_ETCH</code>, etc.) are mapped to <code class="px-1 py-0.5 rounded bg-slate-900/80 text-amber-200 font-mono">STEP_A..STEP_E</code> and normalized to <code class="px-1 py-0.5 rounded bg-slate-900/80 text-amber-200 font-mono">[0.0, 1.0]</code>.
         </p>
       </div>
-      <span class="text-xs font-mono px-2.5 py-1 rounded bg-slate-900 text-amber-300 border border-amber-500/30">
+      <span class="text-xs font-mono px-3 py-1.5 rounded bg-slate-900 text-amber-300 border border-amber-500/30 whitespace-nowrap">
         100 Wafers × 100 Params = 10,000 Cells
       </span>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div class="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
-        <h3 class="text-sm font-bold text-white">Batch Parameter Selection (`data_preprocess`)</h3>
+        <h3 class="text-sm font-bold text-white">
+          Batch Parameter Selection (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data_preprocess</code>)
+        </h3>
         <p class="text-xs text-slate-400">
           Select parameter batches by physical group or process step instead of picking 100 columns one by one:
         </p>
@@ -78,7 +80,7 @@
           </div>
         </div>
         <div class="pt-3 border-t border-slate-800 flex items-center justify-between">
-          <span id="selectedCountBadge" class="text-xs text-emerald-400 font-semibold">Selected: 100 / 100 parameters</span>
+          <span id="selectedCountBadge" class="text-xs text-emerald-400 font-semibold">Selected: 52 / 100 parameters</span>
           <button onclick="runPreprocessAndContinue()" class="px-4 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white">
             Apply Skill &amp; Open Hypothesis Canvas →
           </button>
@@ -88,7 +90,9 @@
       <!-- Obfuscated Preview Table -->
       <div class="lg:col-span-2 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-3 overflow-x-auto">
         <div class="flex items-center justify-between">
-          <h3 class="text-sm font-bold text-white">Obfuscated Wafer Dataset Preview (`data/obfuscated_wafers.csv`)</h3>
+          <h3 class="text-sm font-bold text-white">
+            Obfuscated Wafer Dataset Preview (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-xs">data/obfuscated_wafers.csv</code>)
+          </h3>
           <span class="text-xs text-slate-400">Values min-max normalized to [0.00, 1.00] • Green ≥ 83.5% Yield</span>
         </div>
         <table class="w-full text-left text-xs border-collapse" id="previewTable">
@@ -118,7 +122,7 @@
             <span class="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">Agent 1 • LlmAgent</span>
             <h2 class="text-sm font-bold text-white">Hypothesis Generator Chatbot</h2>
           </div>
-          <button onclick="sendChat('')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white">
+          <button id="autoScanBtn" onclick="sendChat('')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition">
             Auto-Scan Top Hypotheses
           </button>
         </div>
@@ -127,13 +131,13 @@
           <input id="chatInput" type="text" placeholder="Ask e.g. 'Is UNDERFILL_LAMINATION (STEP_A) important?' or 'Check temp × pressure'"
             class="flex-1 rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
             onkeydown="if(event.key==='Enter') sendChat(this.value)" />
-          <button onclick="sendChat(document.getElementById('chatInput').value)"
-            class="px-4 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white">
+          <button id="askAgentBtn" onclick="sendChat(document.getElementById('chatInput').value)"
+            class="px-4 py-2 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition">
             Ask Agent
           </button>
         </div>
 
-        <div id="chatReplyBox" class="rounded-lg bg-slate-950/90 border border-slate-800 p-3 text-xs text-slate-300 leading-relaxed">
+        <div id="chatReplyBox" class="rounded-lg bg-slate-950/90 border border-slate-800 p-3.5 text-xs text-slate-300 leading-relaxed space-y-2">
           Click <strong>Auto-Scan Top Hypotheses</strong> or type a process question above to generate A2UI candidate cards.
         </div>
 
@@ -151,7 +155,7 @@
               <h2 class="text-sm font-bold text-white">Hypothesis Testing Queue</h2>
             </div>
             <button onclick="evaluateNextInQueue()" id="evalNextBtn"
-              class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow">
+              class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow transition">
               ▶ Test Next Hypothesis in Queue (1-by-1)
             </button>
           </div>
@@ -167,7 +171,7 @@
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2">
           <div class="flex items-center justify-between">
             <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Observability &amp; Guardrails (`SafetyPlugin` Pre-Response Hook + OpenTelemetry Spans)
+              Observability &amp; Guardrails (<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-[11px] normal-case">SafetyPlugin</code> Pre-Response Hook + OpenTelemetry Spans)
             </h3>
             <button onclick="refreshObservability()" class="text-xs text-indigo-400 hover:underline">Refresh Telemetry</button>
           </div>
@@ -179,7 +183,51 @@
 
   <script>
     let activeBatches = new Set(['TEMPERATURE', 'PRESSURE', 'STEP_A']);
-    let chartInstances = {};
+    let hasInitialScanRun = false;
+
+    // Clean Markdown-to-HTML renderer (handles **bold**, *italic*, `code`, and bullet lists)
+    function renderMarkdown(mdText) {
+      if (!mdText) return '';
+      const escaped = String(mdText)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      const formatInline = (str) => str
+        .replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 font-mono text-[11px]">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em class="text-indigo-200 italic">$1</em>');
+
+      const lines = escaped.split('\n');
+      let html = '';
+      let inList = false;
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          if (inList) {
+            html += '</ul>';
+            inList = false;
+          }
+          continue;
+        }
+        if (line.startsWith('- ')) {
+          if (!inList) {
+            html += '<ul class="list-disc list-inside space-y-1 text-slate-300 mt-1">';
+            inList = true;
+          }
+          html += `<li>${formatInline(line.slice(2))}</li>`;
+        } else {
+          if (inList) {
+            html += '</ul>';
+            inList = false;
+          }
+          html += `<p>${formatInline(line)}</p>`;
+        }
+      }
+      if (inList) html += '</ul>';
+      return html;
+    }
 
     function switchScreen(num) {
       document.getElementById('screen1').classList.toggle('hidden', num !== 1);
@@ -190,6 +238,10 @@
       document.getElementById('tabBtn2').className = num === 2
         ? 'px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white'
         : 'px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300';
+
+      if (num === 2 && !hasInitialScanRun) {
+        sendChat('');
+      }
     }
 
     function updateBatchButtonsUI() {
@@ -249,6 +301,7 @@
 
     async function runPreprocessAndContinue() {
       await loadPreprocessPreview();
+      hasInitialScanRun = true;
       switchScreen(2);
       await sendChat('');
     }
@@ -259,7 +312,7 @@
       container.innerHTML = '';
       if (!candidates || candidates.length === 0) return;
 
-      candidates.forEach(c => {
+      candidates.forEach((c, idx) => {
         const typeBadgeColor = c.hypothesis_type === 'step_level'
           ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
           : (c.hypothesis_type === 'two_way_interaction'
@@ -267,19 +320,19 @@
             : 'bg-sky-500/20 text-sky-300 border-sky-500/30');
 
         const card = document.createElement('div');
-        card.className = 'rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-2';
+        card.className = 'rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-2 transition hover:border-indigo-500/50';
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded border ${typeBadgeColor}">
-              ${c.hypothesis_type.replace(/_/g, ' ')}
+              #${idx + 1} • ${c.hypothesis_type.replace(/_/g, ' ')}
             </span>
             <span class="text-[10px] font-mono text-slate-500">A2UI v0.9 Card</span>
           </div>
-          <h3 class="text-xs font-bold text-white">${c.title}</h3>
-          <p class="text-xs text-slate-400">${c.rationale}</p>
+          <h3 class="text-xs font-bold text-white">${renderMarkdown(c.title)}</h3>
+          <div class="text-xs text-slate-400">${renderMarkdown(c.rationale)}</div>
           <div class="pt-1">
-            <button onclick="addToQueue('${c.hypothesis_id}')"
-              class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/90 hover:bg-indigo-500 text-white">
+            <button onclick="addToQueue('${c.hypothesis_id}', this)"
+              class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/90 hover:bg-indigo-500 text-white transition">
               + Add to Testing Queue
             </button>
           </div>
@@ -289,15 +342,45 @@
     }
 
     async function sendChat(message) {
-      const res = await fetch('/api/chat_generate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({message: message || ''})
-      });
-      const data = await res.json();
-      document.getElementById('chatReplyBox').innerHTML = data.chat_reply || '';
-      renderA2uiDiscoveryCards(data.ui, data.candidate_hypotheses || []);
-      refreshObservability();
+      hasInitialScanRun = true;
+      const replyBox = document.getElementById('chatReplyBox');
+      const askBtn = document.getElementById('askAgentBtn');
+      const scanBtn = document.getElementById('autoScanBtn');
+      const inputEl = document.getElementById('chatInput');
+
+      const trimmed = (message || '').trim();
+      askBtn.disabled = true;
+      scanBtn.disabled = true;
+      replyBox.innerHTML = `<div class="text-indigo-400 font-semibold animate-pulse">Running hypothesis_generator_agent across 100 wafers...</div>`;
+
+      try {
+        const res = await fetch('/api/chat_generate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({message: trimmed})
+        });
+        const data = await res.json();
+        const timestamp = new Date().toLocaleTimeString();
+        const userHeader = trimmed
+          ? `<div class="pb-2 mb-2 border-b border-slate-800 flex items-center justify-between">
+               <span class="text-indigo-300 font-semibold">You asked: "${trimmed}"</span>
+               <span class="text-[10px] font-mono text-slate-500">${timestamp}</span>
+             </div>`
+          : `<div class="pb-2 mb-2 border-b border-slate-800 flex items-center justify-between">
+               <span class="text-emerald-300 font-semibold">Auto-Scan Discovery Run</span>
+               <span class="text-[10px] font-mono text-slate-500">${timestamp}</span>
+             </div>`;
+
+        replyBox.innerHTML = userHeader + renderMarkdown(data.chat_reply || '');
+        if (trimmed) inputEl.value = '';
+        renderA2uiDiscoveryCards(data.ui, data.candidate_hypotheses || []);
+        await refreshObservability();
+      } catch (err) {
+        replyBox.innerHTML = `<div class="text-rose-400 font-semibold">Error communicating with agent: ${err}</div>`;
+      } finally {
+        askBtn.disabled = false;
+        scanBtn.disabled = false;
+      }
     }
 
     function renderQueueBar(queue) {
@@ -316,7 +399,11 @@
       }).join('');
     }
 
-    async function addToQueue(hypothesisId) {
+    async function addToQueue(hypothesisId, btnEl) {
+      if (btnEl) {
+        btnEl.textContent = '✓ Queued for 1-by-1 Test';
+        btnEl.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition';
+      }
       const res = await fetch('/api/queue/add', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -324,23 +411,30 @@
       });
       const data = await res.json();
       renderQueueBar(data.hypothesis_queue || []);
-      refreshObservability();
+      await refreshObservability();
     }
 
     async function evaluateNextInQueue() {
-      const res = await fetch('/api/queue/evaluate_next', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({})
-      });
-      const data = await res.json();
-      if (data.status === 'queue_empty') {
-        alert(data.message);
-        return;
+      const btn = document.getElementById('evalNextBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/queue/evaluate_next', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data.status === 'queue_empty') {
+          const box = document.getElementById('queuePills');
+          box.innerHTML = `<span class="text-amber-300 font-semibold">${data.message}</span>`;
+          return;
+        }
+        renderQueueBar(data.hypothesis_queue || []);
+        prependEvaluatedCard(data.evaluation, data.a2ui_stream);
+        await refreshObservability();
+      } finally {
+        btn.disabled = false;
       }
-      renderQueueBar(data.hypothesis_queue || []);
-      prependEvaluatedCard(data.evaluation, data.a2ui_stream);
-      refreshObservability();
     }
 
     function prependEvaluatedCard(ev, a2uiStream) {
@@ -367,7 +461,7 @@
         </div>
         <h3 class="text-base font-bold text-white">${ev.title}</h3>
         <div class="rounded-lg bg-slate-950 border border-slate-800 p-3.5 space-y-2 text-xs">
-          <p class="text-slate-200 leading-relaxed"><strong>Plain-English Finding:</strong> ${ev.plain_english_summary}</p>
+          <div class="text-slate-200 leading-relaxed"><strong>Plain-English Finding:</strong> ${renderMarkdown(ev.plain_english_summary)}</div>
           <p class="text-emerald-400 font-medium">${ev.certainty_statement}</p>
           <p class="text-slate-400">${ev.good_bad_wafer_split}</p>
           <p class="text-indigo-300 font-semibold">Recommended Process Action: ${ev.recommended_action}</p>
@@ -480,9 +574,26 @@
       document.getElementById('telemetryBox').textContent = JSON.stringify(data, null, 2);
     }
 
-    window.addEventListener('DOMContentLoaded', () => {
-      loadPreprocessPreview();
-      refreshObservability();
+    // Support URL hash or query param ?screen=2 for automated headless browser testing
+    window.addEventListener('DOMContentLoaded', async () => {
+      await loadPreprocessPreview();
+      await refreshObservability();
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('screen') === '2') {
+        if (params.get('ask')) {
+          hasInitialScanRun = true;
+          switchScreen(2);
+          await sendChat(params.get('ask'));
+        } else {
+          switchScreen(2);
+        }
+        if (params.get('autoeval') === '1') {
+          const firstBtn = document.querySelector('#a2uiDiscoverySurface button');
+          if (firstBtn) firstBtn.click();
+          await new Promise(r => setTimeout(r, 150));
+          await evaluateNextInQueue();
+        }
+      }
     });
   </script>
 </body>

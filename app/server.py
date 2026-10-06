@@ -63,12 +63,18 @@ def build_looker_studio_csv(session_id: str = "default_session") -> str:
     return buf.getvalue()
 
 
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         raw = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -79,6 +85,7 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html_bytes)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(html_bytes)
             return
@@ -95,6 +102,7 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
                 "Content-Disposition", 'attachment; filename="evaluated_hypotheses_looker_studio.csv"'
             )
             self.send_header("Content-Length", str(len(csv_text)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(csv_text)
             return
@@ -139,9 +147,8 @@ class HypothesisRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((host, port), HypothesisRequestHandler) as httpd:
-        print(f"Process Hypothesis Agent & A2UI v0.9 Canvas listening on http://{host}:{port}")
+    with ThreadingHTTPServer((host, port), HypothesisRequestHandler) as httpd:
+        print(f"Process Hypothesis Agent & A2UI v0.9 Canvas listening on http://{host}:{port}", flush=True)
         httpd.serve_forever()
 
 
