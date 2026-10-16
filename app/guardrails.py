@@ -222,6 +222,37 @@ class SafetyPlugin:
                     "Use data/obfuscated_wafers.csv produced by data_preprocess."
                 ),
             }
+        if tool_name == "run_multi_model_feature_selection":
+            valid_modes = {"FAST_TRIAGE", "BALANCED_FAB", "DEEP_INTERACTION", "STRICT_AUDIT"}
+            raw_mode = tool_args.get("mode_id")
+            if raw_mode is not None:
+                mode_id = str(raw_mode).strip().upper()
+                if mode_id not in valid_modes:
+                    return {
+                        "blocked": True,
+                        "error": (
+                            f"Invalid mode_id '{raw_mode}'. Choose one of: "
+                            f"{', '.join(sorted(valid_modes))}."
+                        ),
+                    }
+            m_cfg = tool_args.get("model_config") or {}
+            if isinstance(m_cfg, dict) and "active_models" in m_cfg:
+                valid_models = {
+                    "L1_LASSO",
+                    "RANDOM_FOREST",
+                    "GRADIENT_BOOSTING",
+                    "PERMUTATION_RIDGE",
+                    "MUTUAL_INFO_RANK",
+                }
+                req_models = m_cfg.get("active_models")
+                if not isinstance(req_models, list) or not [m for m in req_models if m in valid_models]:
+                    return {
+                        "blocked": True,
+                        "error": (
+                            "model_config.active_models must contain at least one valid ML model ID: "
+                            f"{', '.join(sorted(valid_models))}."
+                        ),
+                    }
         return None
 
     def check_output_pii(self, response_payload: Any) -> Tuple[Any, List[str]]:

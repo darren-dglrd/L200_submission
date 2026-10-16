@@ -936,12 +936,14 @@ class ProcessHypothesisMultiAgentApp:
     def run_multi_model_feature_selection_agent(
         self,
         selected_columns: Optional[List[str]] = None,
-        top_k_cutoff: int = 5,
+        top_k_cutoff: Optional[int] = None,
         dataset_id: Optional[str] = None,
         bypass_subsample: bool = False,
+        mode_id: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
         session_id: str = "default_session",
     ) -> Dict[str, Any]:
-        """Screen 3 Agent: Runs 5 ML feature selection models across queued & candidate hypotheses."""
+        """Screen 3 Agent: Runs configurable ML feature selection models across queued & candidate hypotheses."""
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         session = self.session_service.get_or_create_session(session_id=session_id)
         prev_cols = list(session["state"].get("selected_columns") or [])
@@ -950,6 +952,21 @@ class ProcessHypothesisMultiAgentApp:
         active_cols = session["state"].get("selected_columns") or None
         active_ds = normalize_dataset_id(dataset_id or session["state"].get("dataset_id", "lot_alpha"))
         session["state"]["dataset_id"] = active_ds
+
+        prev_fs_cfg = session["state"].get("feature_selection_config") or {}
+        effective_mode = mode_id or prev_fs_cfg.get("mode_id") or "BALANCED_FAB"
+
+        tool_err = self.safety_plugin.validate_tool_params(
+            tool_name="run_multi_model_feature_selection",
+            tool_args={
+                "mode_id": effective_mode,
+                "model_config": model_config,
+                "dataset_path": "data/obfuscated_wafers.csv",
+            },
+            session_state=session["state"],
+        )
+        if tool_err:
+            return tool_err
 
         queue: List[Dict[str, Any]] = list(session["state"].get("hypothesis_queue", []))
         candidates: List[Dict[str, Any]] = list(session["state"].get("candidate_hypotheses", []))
@@ -976,7 +993,6 @@ class ProcessHypothesisMultiAgentApp:
         seen_ids = set()
         for q in queue:
             q_params = q.get("parameters", [])
-            # Keep queued item if it is a step-level hypothesis or its parameters are in active_set
             if not active_set or q.get("hypothesis_type") == "step_level" or all(p in active_set for p in q_params):
                 if q["hypothesis_id"] not in seen_ids:
                     combined_hyps.append(q)
@@ -995,9 +1011,11 @@ class ProcessHypothesisMultiAgentApp:
                 dataset_id=active_ds,
                 data_dir=self.data_dir,
                 bypass_subsample=bypass_subsample,
+                mode_id=effective_mode,
+                model_config=model_config,
             )
 
-        fs_bundle, _ = self.observability.trace_span(
+        fs_bundle, span_info = self.observability.trace_span(
             trace_id=trace_id,
             operation_name="agent:feature_selection_agent.run_multi_model_feature_selection",
             actor="feature_selection_agent",
@@ -1006,12 +1024,51 @@ class ProcessHypothesisMultiAgentApp:
                 "dataset_id": active_ds,
                 "active_columns_count": len(active_cols or []),
                 "hypotheses_count": len(combined_hyps),
-                "top_k_cutoff": top_k_cutoff,
+                "mode_id": effective_mode,
                 "bypass_subsample": bypass_subsample,
             },
         )
 
+        resolved_cfg = fs_bundle["data"]["resolved_config"]
+        span_info["attributes"].update({
+            "mode_id": resolved_cfg["mode_id"],
+            "fs.mode_id": resolved_cfg["mode_id"],
+            "active_models": resolved_cfg["active_models"],
+            "active_models_count": len(resolved_cfg["active_models"]),
+            "fs.active_models_count": len(resolved_cfg["active_models"]),
+            "top_k_cutoff": resolved_cfg["top_k_cutoff"],
+            "consensus_min_models": resolved_cfg["consensus_min_models"],
+            "regularization_type": resolved_cfg["regularization_type"],
+            "fs.regularization_type": resolved_cfg["regularization_type"],
+            "reg_lambda": resolved_cfg["reg_lambda"],
+            "max_depth": resolved_cfg["max_depth"],
+            "fs.max_depth": resolved_cfg["max_depth"],
+            "max_leaves": resolved_cfg["max_leaves"],
+            "fs.max_leaves": resolved_cfg["max_leaves"],
+            "n_trees": resolved_cfg["n_trees"],
+            "epochs": resolved_cfg["epochs"],
+            "convergence_tol": resolved_cfg["convergence_tol"],
+            "is_customized": resolved_cfg["is_customized"],
+            "fs.is_customized": resolved_cfg["is_customized"],
+            "customized_keys": resolved_cfg["customized_keys"],
+        })
+
         clean_bundle, redactions = self.safety_plugin.check_output_pii(fs_bundle)
+        session["state"]["feature_selection_config"] = clean_bundle["data"]["resolved_config"]
+
+        top_global = (clean_bundle["data"].get("global_top_features") or [None])[0]
+        if top_global:
+            self.memory_bank.consolidate_memory_async(
+                fact=(
+                    f"[{active_ds} • {resolved_cfg['mode_id']}] Top consensus feature: "
+                    f"{top_global['column']} ({top_global['consistency_hero']} models in Top-{resolved_cfg['top_k_cutoff']}, "
+                    f"Avg Rank #{top_global['mean_rank']})"
+                ),
+                topic=f"FS_{active_ds}_{top_global['column']}",
+                source_type="Analytics Discovery",
+                importance=0.88,
+            )
+
         self.session_service.save_state_and_event(
             session_id=session_id,
             state=session["state"],
@@ -1019,8 +1076,10 @@ class ProcessHypothesisMultiAgentApp:
             role="model",
             content={
                 "dataset_id": active_ds,
+                "mode_id": resolved_cfg["mode_id"],
                 "active_columns_count": len(active_cols or []),
-                "top_k_cutoff": top_k_cutoff,
+                "top_k_cutoff": resolved_cfg["top_k_cutoff"],
+                "is_customized": resolved_cfg["is_customized"],
             },
             compaction_config=self.compaction_config,
         )
@@ -1028,10 +1087,12 @@ class ProcessHypothesisMultiAgentApp:
             "status": "ok",
             "agent": "feature_selection_agent",
             "dataset_id": active_ds,
+            "mode_id": resolved_cfg["mode_id"],
             "feature_selection": clean_bundle["data"],
             "ui": clean_bundle["ui"],
             "ui_available": True,
             "redactions_applied": redactions,
             "trace_id": trace_id,
         }
+
 

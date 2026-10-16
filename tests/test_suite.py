@@ -613,9 +613,147 @@ class TestProcessHypothesisAgentSuite(unittest.TestCase):
             ("STEP_D_RF_POWER_01", "STEP_D_DURATION_01"),
         )
 
+    def test_11_view3_modes_and_editable_hyperparameters(self) -> None:
+        """Verify View 3 Process Engineer Modes (FAST_TRIAGE, BALANCED_FAB, DEEP_INTERACTION, STRICT_AUDIT), editable hyperparameters, MCP & Guardrail validation, and pass^3 repeatability."""
+        from app.stats_engine import ENGINEERING_MODES, resolve_feature_selection_config
+        from skills.data_preprocess.scripts.preprocess import DATA_DIR as REPO_DATA_DIR
+
+        app = ProcessHypothesisMultiAgentApp(
+            db_path=self.base_path / "view3_modes_test.db",
+            data_dir=REPO_DATA_DIR,
+        )
+        app.preprocess_dataset(batches=["ALL"], dataset_id="lot_alpha", session_id="sess_v3")
+        app.run_hypothesis_generator_agent(user_message="", dataset_id="lot_alpha", session_id="sess_v3")
+
+        # 1. Verify all 4 Process Engineer Modes resolve & execute cleanly with pass^3 repeatability
+        for mode_id in ("FAST_TRIAGE", "BALANCED_FAB", "DEEP_INTERACTION", "STRICT_AUDIT"):
+            self.assertIn(mode_id, ENGINEERING_MODES)
+            top_cols_across_runs = []
+            for _ in range(3):
+                res = app.run_multi_model_feature_selection_agent(
+                    mode_id=mode_id,
+                    dataset_id="lot_alpha",
+                    session_id="sess_v3",
+                )
+                fs = res["feature_selection"]
+                self.assertEqual(fs["resolved_config"]["mode_id"], mode_id)
+                self.assertFalse(fs["resolved_config"]["is_customized"])
+                if mode_id == "FAST_TRIAGE":
+                    self.assertEqual(fs["active_models_count"], 3)
+                    self.assertEqual(fs["resolved_config"]["epochs"], 20)
+                    self.assertEqual(fs["resolved_config"]["max_depth"], 1)
+                    self.assertEqual(fs["resolved_config"]["max_leaves"], 2)
+                else:
+                    self.assertEqual(fs["active_models_count"], 5)
+                top_cols_across_runs.append(fs["global_top_features"][0]["column"])
+            # pass^3 deterministic repeatability
+            self.assertEqual(len(set(top_cols_across_runs)), 1)
+            self.assertIn(top_cols_across_runs[0], ("STEP_A_TEMPERATURE_01", "STEP_A_PRESSURE_01"))
+
+        # 2. Verify custom user hyperparameter overrides on top of FAST_TRIAGE
+        custom_cfg = {
+            "active_models": ["L1_LASSO", "RANDOM_FOREST", "GRADIENT_BOOSTING", "MUTUAL_INFO_RANK"],
+            "regularization_type": "ELASTIC_NET",
+            "reg_lambda": 0.18,
+            "max_depth": 3,
+            "max_leaves": 6,
+            "n_trees": 15,
+            "epochs": 35,
+            "learning_rate": 0.20,
+            "convergence_tol": 0.002,
+            "split_threshold_bins": 7,
+            "min_impurity_gain": 0.008,
+            "top_k_cutoff": 4,
+            "consensus_min_models": 3,
+        }
+        custom_res = app.run_multi_model_feature_selection_agent(
+            mode_id="FAST_TRIAGE",
+            model_config=custom_cfg,
+            dataset_id="lot_alpha",
+            session_id="sess_v3",
+        )
+        cfs = custom_res["feature_selection"]
+        rcfg = cfs["resolved_config"]
+        self.assertEqual(rcfg["mode_id"], "FAST_TRIAGE")
+        self.assertTrue(rcfg["is_customized"])
+        self.assertIn("regularization_type", rcfg["customized_keys"])
+        self.assertIn("max_depth", rcfg["customized_keys"])
+        self.assertIn("max_leaves", rcfg["customized_keys"])
+        self.assertEqual(rcfg["regularization_type"], "ELASTIC_NET")
+        self.assertEqual(rcfg["max_depth"], 3)
+        self.assertEqual(rcfg["max_leaves"], 6)
+        self.assertEqual(cfs["active_models_count"], 4)
+        self.assertEqual(cfs["top_k_cutoff"], 4)
+
+        # Verify skipped model is marked is_active=False in per_model_breakdown
+        perm_entry = next(
+            m for m in cfs["hypothesis_consistency"][0]["per_model_breakdown"]
+            if m["model_id"] == "PERMUTATION_RIDGE"
+        )
+        self.assertFalse(perm_entry["is_active"])
+        self.assertEqual(perm_entry["badge_text"], "SKIPPED")
+
+        # Verify convergence telemetry and session state persistence
+        conv = cfs["convergence_telemetry"]
+        self.assertTrue(conv["L1_LASSO"]["active"])
+        self.assertEqual(conv["L1_LASSO"]["reg_type"], "ELASTIC_NET")
+        self.assertTrue(conv["RANDOM_FOREST"]["active"])
+        self.assertEqual(conv["RANDOM_FOREST"]["max_depth"], 3)
+        self.assertEqual(conv["RANDOM_FOREST"]["max_leaves"], 6)
+        self.assertFalse(conv["PERMUTATION_RIDGE"]["active"])
+
+        sess = app.session_service.get_or_create_session("sess_v3")
+        self.assertEqual(sess["state"]["feature_selection_config"]["regularization_type"], "ELASTIC_NET")
+
+        # Verify OTel span attributes recorded for feature selection
+        fs_spans = [
+            s for s in app.observability.spans
+            if s.get("operation_name") == "agent:feature_selection_agent.run_multi_model_feature_selection"
+        ]
+        self.assertGreater(len(fs_spans), 0)
+        last_span_attrs = fs_spans[-1]["attributes"]
+        self.assertEqual(last_span_attrs["fs.mode_id"], "FAST_TRIAGE")
+        self.assertTrue(last_span_attrs["fs.is_customized"])
+        self.assertEqual(last_span_attrs["fs.regularization_type"], "ELASTIC_NET")
+
+        # 3. Verify Guardrails & MCP tool validation (instructive isError: True on invalid params + valid call)
+        bad_mcp = handle_jsonrpc_request({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/call",
+            "params": {
+                "name": "run_multi_model_feature_selection",
+                "arguments": {
+                    "mode_id": "INVALID_MODE",
+                },
+            },
+        })
+        self.assertTrue(bad_mcp["result"]["isError"])
+        self.assertIn("FAST_TRIAGE", bad_mcp["result"]["content"][0]["text"])
+
+        good_mcp = handle_jsonrpc_request({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/call",
+            "params": {
+                "name": "run_multi_model_feature_selection",
+                "arguments": {
+                    "dataset_id": "lot_alpha",
+                    "mode_id": "FAST_TRIAGE",
+                    "model_config": {"regularization_type": "L2", "max_depth": 2, "max_leaves": 4},
+                },
+            },
+        })
+        self.assertFalse(good_mcp["result"]["isError"])
+        mcp_payload = json.loads(good_mcp["result"]["content"][0]["text"])
+        self.assertEqual(mcp_payload["mode_id"], "FAST_TRIAGE")
+        self.assertTrue(mcp_payload["is_customized"])
+        self.assertEqual(mcp_payload["active_models_count"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

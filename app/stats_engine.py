@@ -144,7 +144,20 @@ def _pearson_r_and_p(xs: List[float], ys: List[float]) -> Tuple[float, float, fl
     return round(r, 4), round(t_stat, 3), max(1e-9, min(1.0, p_val))
 
 
-def _tree_stump_importance(xs: List[float], ys: List[float]) -> Tuple[float, float, float, float]:
+_SPLIT_THRESHOLDS_BY_BINS: Dict[int, Tuple[float, ...]] = {
+    3: (0.35, 0.50, 0.65),
+    5: (0.35, 0.45, 0.50, 0.55, 0.65),
+    7: (0.25, 0.35, 0.45, 0.50, 0.55, 0.65, 0.75),
+    9: (0.20, 0.30, 0.35, 0.45, 0.50, 0.55, 0.65, 0.70, 0.80),
+}
+
+
+def _tree_stump_importance(
+    xs: List[float],
+    ys: List[float],
+    num_bins: int = 5,
+    min_impurity_gain: float = 0.0,
+) -> Tuple[float, float, float, float]:
     """Find best 1D decision-tree split threshold and compute variance reduction in a single pass."""
     n = len(xs)
     if n < 16:
@@ -155,30 +168,44 @@ def _tree_stump_importance(xs: List[float], ys: List[float]) -> Tuple[float, flo
     if tss < 1e-9:
         return 0.5, round(mean_y, 2), round(mean_y, 2), 0.0
 
-    # Single-pass bucket accumulation for thresholds [0.35, 0.45, 0.50, 0.55, 0.65]
-    b_cnt = [0, 0, 0, 0, 0, 0]
-    b_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    for x, y in zip(xs, ys):
-        if x <= 0.35:
-            b_cnt[0] += 1
-            b_sum[0] += y
-        elif x <= 0.45:
-            b_cnt[1] += 1
-            b_sum[1] += y
-        elif x <= 0.50:
-            b_cnt[2] += 1
-            b_sum[2] += y
-        elif x <= 0.55:
-            b_cnt[3] += 1
-            b_sum[3] += y
-        elif x <= 0.65:
-            b_cnt[4] += 1
-            b_sum[4] += y
-        else:
-            b_cnt[5] += 1
-            b_sum[5] += y
+    thresholds = _SPLIT_THRESHOLDS_BY_BINS.get(num_bins, _SPLIT_THRESHOLDS_BY_BINS[5])
+    k_t = len(thresholds)
+    b_cnt = [0] * (k_t + 1)
+    b_sum = [0.0] * (k_t + 1)
 
-    thresholds = (0.35, 0.45, 0.50, 0.55, 0.65)
+    if k_t == 5:
+        for x, y in zip(xs, ys):
+            if x <= 0.35:
+                b_cnt[0] += 1
+                b_sum[0] += y
+            elif x <= 0.45:
+                b_cnt[1] += 1
+                b_sum[1] += y
+            elif x <= 0.50:
+                b_cnt[2] += 1
+                b_sum[2] += y
+            elif x <= 0.55:
+                b_cnt[3] += 1
+                b_sum[3] += y
+            elif x <= 0.65:
+                b_cnt[4] += 1
+                b_sum[4] += y
+            else:
+                b_cnt[5] += 1
+                b_sum[5] += y
+    else:
+        for x, y in zip(xs, ys):
+            placed = False
+            for idx_b, th_val in enumerate(thresholds):
+                if x <= th_val:
+                    b_cnt[idx_b] += 1
+                    b_sum[idx_b] += y
+                    placed = True
+                    break
+            if not placed:
+                b_cnt[k_t] += 1
+                b_sum[k_t] += y
+
     best_gain = -1.0
     best_thresh = 0.5
     best_low_mean = mean_y
@@ -203,6 +230,9 @@ def _tree_stump_importance(xs: List[float], ys: List[float]) -> Tuple[float, flo
             best_thresh = thresh
             best_low_mean = m_low
             best_high_mean = m_high
+
+    if best_gain < max(0.0, min_impurity_gain):
+        return best_thresh, round(best_low_mean, 2), round(best_high_mean, 2), 0.0
 
     return best_thresh, round(best_low_mean, 2), round(best_high_mean, 2), round(max(0.0, best_gain), 4)
 
@@ -1418,6 +1448,238 @@ ML_MODEL_SPECS: List[Dict[str, str]] = [
     },
 ]
 
+ENGINEERING_MODES: Dict[str, Dict[str, Any]] = {
+    "FAST_TRIAGE": {
+        "mode_id": "FAST_TRIAGE",
+        "name": "⚡ Fast Mode — Rapid Line-Down Triage",
+        "short_name": "⚡ Fast Triage",
+        "badge": "Sub-50ms • Classical ML + Tree Stumps",
+        "engineer_summary": (
+            "Optimized for urgent excursion triage on 100–50,000 wafers: combines classical L1 Lasso, "
+            "Permutation Ridge, Mutual Info, and shallow Depth-1 Random Forest stumps with lower epochs "
+            "(4 epochs, 8 trees) and lighter convergence/split thresholds (tol=0.01, 3 bins)."
+        ),
+        "default_config": {
+            "active_models": [
+                "L1_LASSO",
+                "RANDOM_FOREST",
+                "MUTUAL_INFO_RANK",
+            ],
+            "top_k_cutoff": 5,
+            "consensus_min_models": 2,
+            "regularization_type": "L1",
+            "reg_lambda": 0.25,
+            "epochs": 20,
+            "convergence_tol": 0.005,
+            "n_trees": 8,
+            "max_depth": 1,
+            "max_leaves": 2,
+            "learning_rate": 0.25,
+            "split_threshold_bins": 3,
+            "min_impurity_gain": 0.015,
+            "wafer_subsample_cap": 600,
+        },
+    },
+    "BALANCED_FAB": {
+        "mode_id": "BALANCED_FAB",
+        "name": "⚖️ Balanced Mode — Standard Fab Consensus (Default)",
+        "short_name": "⚖️ Balanced Fab",
+        "badge": "Recommended • All 5 ML Families",
+        "engineer_summary": (
+            "Standard shift-handover baseline: runs all 5 ML families (L1 Lasso Linear, "
+            "20-Tree Depth-2 Random Forest, Gradient Boosting, Permutation Ridge, "
+            "and Mutual Info) requiring ≥4/5 models in Top-5."
+        ),
+        "default_config": {
+            "active_models": [
+                "L1_LASSO",
+                "RANDOM_FOREST",
+                "GRADIENT_BOOSTING",
+                "PERMUTATION_RIDGE",
+                "MUTUAL_INFO_RANK",
+            ],
+            "top_k_cutoff": 5,
+            "consensus_min_models": 4,
+            "regularization_type": "L1",
+            "reg_lambda": 0.075,
+            "epochs": 16,
+            "convergence_tol": 0.001,
+            "n_trees": 24,
+            "max_depth": 2,
+            "max_leaves": 4,
+            "learning_rate": 0.18,
+            "split_threshold_bins": 5,
+            "min_impurity_gain": 0.002,
+            "wafer_subsample_cap": 1500,
+        },
+    },
+    "DEEP_INTERACTION": {
+        "mode_id": "DEEP_INTERACTION",
+        "name": "🔬 Deep Mode — Non-Linear Chamber Synergy",
+        "short_name": "🔬 Deep Coupling",
+        "badge": "Depth-4 / 12-Leaf Trees • Fine Threshold Grid",
+        "engineer_summary": (
+            "Designed for complex multi-step chamber interactions (e.g., Temp × Pressure or "
+            "RF Power × Dwell): expands trees to Depth 4 (up to 12 leaves), 40 RF trees, "
+            "9 split bins, Elastic-Net regularization, and tight convergence (tol=0.0002)."
+        ),
+        "default_config": {
+            "active_models": [
+                "L1_LASSO",
+                "RANDOM_FOREST",
+                "GRADIENT_BOOSTING",
+                "PERMUTATION_RIDGE",
+                "MUTUAL_INFO_RANK",
+            ],
+            "top_k_cutoff": 8,
+            "consensus_min_models": 3,
+            "regularization_type": "ELASTIC_NET",
+            "reg_lambda": 0.06,
+            "epochs": 30,
+            "convergence_tol": 0.0002,
+            "n_trees": 40,
+            "max_depth": 4,
+            "max_leaves": 12,
+            "learning_rate": 0.10,
+            "split_threshold_bins": 9,
+            "min_impurity_gain": 0.001,
+            "wafer_subsample_cap": 2000,
+        },
+    },
+    "STRICT_AUDIT": {
+        "mode_id": "STRICT_AUDIT",
+        "name": "🛡️ Strict Audit — Spec-Lock & Split-Lot Sign-Off",
+        "short_name": "🛡️ Strict Audit",
+        "badge": "Top-3 • Heavy Regularization",
+        "engineer_summary": (
+            "High-bar verification before locking chamber recipe tolerances or ordering a "
+            "10-wafer A/B split lot: enforces Top-3 cutoff, ≥4/5 model consensus, "
+            "strong L1/L2 penalty (λ=0.22), and min impurity gain ≥ 0.012 to suppress false positives."
+        ),
+        "default_config": {
+            "active_models": [
+                "L1_LASSO",
+                "RANDOM_FOREST",
+                "GRADIENT_BOOSTING",
+                "PERMUTATION_RIDGE",
+                "MUTUAL_INFO_RANK",
+            ],
+            "top_k_cutoff": 3,
+            "consensus_min_models": 4,
+            "regularization_type": "L1",
+            "reg_lambda": 0.22,
+            "epochs": 24,
+            "convergence_tol": 0.0005,
+            "n_trees": 25,
+            "max_depth": 2,
+            "max_leaves": 3,
+            "learning_rate": 0.10,
+            "split_threshold_bins": 5,
+            "min_impurity_gain": 0.012,
+            "wafer_subsample_cap": 1500,
+        },
+    },
+}
+
+
+def resolve_feature_selection_config(
+    mode_id: Optional[str] = "BALANCED_FAB",
+    custom_params: Optional[Dict[str, Any]] = None,
+    top_k_override: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resolve a Process Engineer Mode preset and merge any user-edited hyperparameter overrides."""
+    mode_key = str(mode_id or "BALANCED_FAB").strip().upper()
+    if mode_key not in ENGINEERING_MODES:
+        mode_key = "BALANCED_FAB"
+
+    mode_spec = ENGINEERING_MODES[mode_key]
+    defaults = dict(mode_spec["default_config"])
+    defaults["active_models"] = list(mode_spec["default_config"]["active_models"])
+
+    merged = dict(defaults)
+    merged["active_models"] = list(defaults["active_models"])
+    if isinstance(custom_params, dict):
+        for k, v in custom_params.items():
+            if v is not None and k in merged:
+                merged[k] = v
+    if top_k_override is not None:
+        merged["top_k_cutoff"] = int(top_k_override)
+
+    valid_model_ids = [m["model_id"] for m in ML_MODEL_SPECS]
+    raw_active = merged.get("active_models") or valid_model_ids
+    if isinstance(raw_active, list):
+        clean_active = [m for m in valid_model_ids if m in raw_active]
+    else:
+        clean_active = list(valid_model_ids)
+    if not clean_active:
+        clean_active = list(defaults["active_models"])
+
+    top_k = max(1, min(15, int(merged.get("top_k_cutoff", defaults["top_k_cutoff"]))))
+    consensus_min = max(
+        1,
+        min(
+            len(clean_active),
+            int(merged.get("consensus_min_models", defaults["consensus_min_models"])),
+        ),
+    )
+
+    reg_type = str(merged.get("regularization_type", defaults["regularization_type"])).strip().upper()
+    if reg_type not in ("L1", "L2", "ELASTIC_NET"):
+        reg_type = defaults["regularization_type"]
+
+    reg_lambda = round(max(0.005, min(1.0, float(merged.get("reg_lambda", defaults["reg_lambda"])))), 4)
+    epochs = max(2, min(150, int(merged.get("epochs", defaults["epochs"]))))
+    conv_tol = max(1e-5, min(0.05, float(merged.get("convergence_tol", defaults["convergence_tol"]))))
+    n_trees = max(4, min(80, int(merged.get("n_trees", defaults["n_trees"]))))
+    max_depth = max(1, min(5, int(merged.get("max_depth", defaults["max_depth"]))))
+    max_leaves = max(2, min(32, int(merged.get("max_leaves", defaults["max_leaves"]))))
+    learning_rate = round(max(0.01, min(0.50, float(merged.get("learning_rate", defaults["learning_rate"])))), 3)
+
+    raw_bins = int(merged.get("split_threshold_bins", defaults["split_threshold_bins"]))
+    split_bins = min((3, 5, 7, 9), key=lambda b: abs(b - raw_bins))
+    min_gain = round(max(0.0, min(0.05, float(merged.get("min_impurity_gain", defaults["min_impurity_gain"])))), 4)
+    subsample_cap = max(200, min(5000, int(merged.get("wafer_subsample_cap", defaults["wafer_subsample_cap"]))))
+
+    resolved = {
+        "mode_id": mode_key,
+        "display_name": mode_spec["short_name"],
+        "mode_name": mode_spec["name"],
+        "mode_short_name": mode_spec["short_name"],
+        "mode_badge": mode_spec["badge"],
+        "mode_summary": mode_spec["engineer_summary"],
+        "active_models": clean_active,
+        "top_k_cutoff": top_k,
+        "consensus_min_models": consensus_min,
+        "regularization_type": reg_type,
+        "reg_lambda": reg_lambda,
+        "epochs": epochs,
+        "convergence_tol": conv_tol,
+        "n_trees": n_trees,
+        "max_depth": max_depth,
+        "max_leaves": max_leaves,
+        "effective_max_leaves": min(max_leaves, 1 << max_depth),
+        "learning_rate": learning_rate,
+        "split_threshold_bins": split_bins,
+        "min_impurity_gain": min_gain,
+        "wafer_subsample_cap": subsample_cap,
+    }
+
+    customized_keys: List[str] = []
+    for k, def_val in defaults.items():
+        cur_val = resolved.get(k)
+        if k == "active_models":
+            if set(cur_val or []) != set(def_val or []):
+                customized_keys.append(k)
+        elif isinstance(def_val, float):
+            if abs(float(cur_val) - def_val) > 1e-6:
+                customized_keys.append(k)
+        elif cur_val != def_val:
+            customized_keys.append(k)
+
+    resolved["customized_keys"] = customized_keys
+    resolved["is_customized"] = len(customized_keys) > 0
+    return resolved
+
 
 def _standardize_vector(vec: List[float]) -> List[float]:
     n = len(vec)
@@ -1430,28 +1692,187 @@ def _standardize_vector(vec: List[float]) -> List[float]:
     return [(v - m) / sd for v in vec]
 
 
+def _fit_bounded_tree(
+    feature_vectors: Dict[str, List[float]],
+    ys: List[float],
+    row_indices: List[int],
+    candidate_feats: List[str],
+    max_depth: int = 2,
+    max_leaves: int = 4,
+    num_bins: int = 5,
+    min_impurity_gain: float = 0.0,
+) -> Tuple[Dict[str, float], Dict[int, float], int]:
+    """Fit a decision tree bounded by both `max_depth` and `max_leaves` using best-first leaf splitting.
+
+    Returns `(feature_gain_map, row_idx_to_prediction, leaves_created)`.
+    """
+    n_total = max(1, len(row_indices))
+    feat_gains: Dict[str, float] = {}
+    leaf_preds: Dict[int, float] = {}
+
+    if not row_indices or not candidate_feats:
+        return feat_gains, leaf_preds, 1
+
+    effective_max_leaves = max(2, min(max_leaves, 1 << max_depth))
+    # Each leaf item is (depth, sample_indices, mean_val)
+    root_mean = sum(ys[i] for i in row_indices) / len(row_indices)
+    open_leaves: List[Dict[str, Any]] = [
+        {"depth": 0, "indices": row_indices, "mean": root_mean, "evaluated": False}
+    ]
+    closed_leaves: List[Dict[str, Any]] = []
+
+    while len(open_leaves) + len(closed_leaves) < effective_max_leaves:
+        # Evaluate split candidates on any unevaluated open leaves that haven't reached max_depth
+        for leaf in open_leaves:
+            if leaf["evaluated"]:
+                continue
+            leaf["evaluated"] = True
+            idxs = leaf["indices"]
+            if leaf["depth"] >= max_depth or len(idxs) < 16:
+                leaf["best_gain"] = -1.0
+                continue
+
+            sub_y = [ys[i] for i in idxs]
+            best_f = candidate_feats[0]
+            best_g = -1.0
+            best_th = 0.5
+            best_low = leaf["mean"]
+            best_high = leaf["mean"]
+            for f in candidate_feats:
+                col_vec = feature_vectors[f]
+                sub_x = [col_vec[i] for i in idxs]
+                th, low_m, high_m, g = _tree_stump_importance(
+                    sub_x,
+                    sub_y,
+                    num_bins=num_bins,
+                    min_impurity_gain=min_impurity_gain,
+                )
+                if g > best_g:
+                    best_g = g
+                    best_f = f
+                    best_th = th
+                    best_low = low_m
+                    best_high = high_m
+
+            if best_g > 0.0:
+                weight = (len(idxs) / n_total) * (1.35 if leaf["depth"] == 0 else (0.70 / leaf["depth"]))
+                leaf["best_gain"] = best_g * weight
+                leaf["raw_gain"] = best_g
+                leaf["best_feat"] = best_f
+                leaf["best_thresh"] = best_th
+                leaf["low_mean"] = best_low
+                leaf["high_mean"] = best_high
+            else:
+                leaf["best_gain"] = -1.0
+
+        splittable = [lf for lf in open_leaves if lf.get("best_gain", -1.0) > 0.0]
+        if not splittable:
+            break
+
+        splittable.sort(key=lambda lf: -lf["best_gain"])
+        chosen = splittable[0]
+        open_leaves.remove(chosen)
+
+        f_win = chosen["best_feat"]
+        th_win = chosen["best_thresh"]
+        col_win = feature_vectors[f_win]
+        left_idxs = [i for i in chosen["indices"] if col_win[i] <= th_win]
+        right_idxs = [i for i in chosen["indices"] if col_win[i] > th_win]
+
+        if not left_idxs or not right_idxs:
+            closed_leaves.append(chosen)
+            continue
+
+        feat_gains[f_win] = feat_gains.get(f_win, 0.0) + chosen["best_gain"]
+        next_d = chosen["depth"] + 1
+        open_leaves.append({
+            "depth": next_d,
+            "indices": left_idxs,
+            "mean": chosen["low_mean"],
+            "evaluated": False,
+        })
+        open_leaves.append({
+            "depth": next_d,
+            "indices": right_idxs,
+            "mean": chosen["high_mean"],
+            "evaluated": False,
+        })
+
+    all_final_leaves = open_leaves + closed_leaves
+    for lf in all_final_leaves:
+        m_val = lf["mean"]
+        for i in lf["indices"]:
+            leaf_preds[i] = m_val
+
+    return feat_gains, leaf_preds, max(1, len(all_final_leaves))
+
+
+def _proximal_regularized_update(
+    rho: float,
+    reg_type: str,
+    reg_lambda: float,
+) -> float:
+    """Apply L1 soft-thresholding, L2 ridge shrinkage, or Elastic-Net proximal step."""
+    if reg_type == "L1":
+        if rho > reg_lambda:
+            return rho - reg_lambda
+        if rho < -reg_lambda:
+            return rho + reg_lambda
+        return 0.0
+    if reg_type == "L2":
+        return rho / (1.0 + reg_lambda * 2.5)
+    # ELASTIC_NET (65% L1 + 35% L2 blend)
+    l1_part = reg_lambda * 0.65
+    l2_part = reg_lambda * 0.85
+    if rho > l1_part:
+        num = rho - l1_part
+    elif rho < -l1_part:
+        num = rho + l1_part
+    else:
+        return 0.0
+    return num / (1.0 + l2_part)
+
+
 def _compute_5_ml_model_scores(
     feature_vectors: Dict[str, List[float]],
     ys: List[float],
     full_abs_r: Optional[Dict[str, float]] = None,
     full_stump_gain: Optional[Dict[str, float]] = None,
-) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
-    """Run 5 distinct ML feature-selection algorithms across `feature_vectors` -> `ys`.
+    config: Optional[Dict[str, Any]] = None,
+    return_telemetry: bool = False,
+) -> Any:
+    """Run up to 5 distinct ML feature-selection algorithms across `feature_vectors` -> `ys`.
 
-    Returns `({model_id: {feature_name: normalized_importance_0_to_100}}, {model_id: elapsed_ms})`.
+    Respects `config` (mode preset + user-edited hyperparameters: `active_models`,
+    `regularization_type`, `reg_lambda`, `epochs`, `convergence_tol`, `n_trees`,
+    `max_depth`, `max_leaves`, `learning_rate`, `split_threshold_bins`, `min_impurity_gain`).
     """
+    cfg = config or resolve_feature_selection_config("BALANCED_FAB")
+    active_set = set(cfg.get("active_models") or [m["model_id"] for m in ML_MODEL_SPECS])
+    reg_type = str(cfg.get("regularization_type", "ELASTIC_NET")).upper()
+    reg_lambda = float(cfg.get("reg_lambda", 0.075))
+    max_epochs = int(cfg.get("epochs", 12))
+    conv_tol = float(cfg.get("convergence_tol", 0.001))
+    n_trees = int(cfg.get("n_trees", 24))
+    max_depth = int(cfg.get("max_depth", 2))
+    max_leaves = int(cfg.get("max_leaves", 4))
+    lr = float(cfg.get("learning_rate", 0.18))
+    split_bins = int(cfg.get("split_threshold_bins", 5))
+    min_gain = float(cfg.get("min_impurity_gain", 0.002))
+
     n = len(ys)
     feat_names = list(feature_vectors.keys())
     if not feat_names or n < 4:
-        return (
-            {m["model_id"]: {f: 0.0 for f in feat_names} for m in ML_MODEL_SPECS},
-            {m["model_id"]: 0.0 for m in ML_MODEL_SPECS},
-        )
+        empty_scores = {m["model_id"]: {f: 0.0 for f in feat_names} for m in ML_MODEL_SPECS}
+        empty_ms = {m["model_id"]: 0.0 for m in ML_MODEL_SPECS}
+        if return_telemetry:
+            return empty_scores, empty_ms, {}
+        return empty_scores, empty_ms
 
     z_y = _standardize_vector(ys)
     z_x: Dict[str, List[float]] = {f: _standardize_vector(feature_vectors[f]) for f in feat_names}
 
-    # Precompute marginal Pearson |r| and tree stump gain (using full-dataset cache when available)
+    # Precompute marginal Pearson |r| and tree stump gain
     abs_r: Dict[str, float] = {}
     stump_gain: Dict[str, float] = {}
     for f in feat_names:
@@ -1460,202 +1881,379 @@ def _compute_5_ml_model_scores(
         else:
             r_f, _, _ = _pearson_r_and_p(feature_vectors[f], ys)
             abs_r[f] = abs(r_f)
-        if full_stump_gain and f in full_stump_gain:
+        if full_stump_gain and f in full_stump_gain and split_bins == 5 and min_gain <= 0.002:
             stump_gain[f] = full_stump_gain[f]
         else:
-            _, _, _, g_f = _tree_stump_importance(feature_vectors[f], ys)
+            _, _, _, g_f = _tree_stump_importance(
+                feature_vectors[f],
+                ys,
+                num_bins=split_bins,
+                min_impurity_gain=min_gain,
+            )
             stump_gain[f] = g_f
 
     ordered_feats = sorted(feat_names, key=lambda f: -abs_r[f])
     per_model_ms: Dict[str, float] = {}
+    telemetry: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------------
-    # Model 1: L1 Lasso Coordinate Descent (Soft-Thresholding, lambda=0.075)
+    # Model 1: Penalized Linear Coordinate Descent (L1 / L2 / Elastic-Net)
     # ------------------------------------------------------------------------
-    t_m1 = time.perf_counter()
-    betas_lasso: Dict[str, float] = {f: 0.0 for f in feat_names}
-    res_lasso = list(z_y)
-    l1_lambda = 0.075
-    for _ in range(10):
-        for f in ordered_feats:
-            zx = z_x[f]
-            old_b = betas_lasso[f]
-            rho = old_b + (sum(zx[i] * res_lasso[i] for i in range(n)) / n)
-            if rho > l1_lambda:
-                new_b = rho - l1_lambda
-            elif rho < -l1_lambda:
-                new_b = rho + l1_lambda
+    if "L1_LASSO" in active_set:
+        t_m1 = time.perf_counter()
+        betas_lasso: Dict[str, float] = {f: 0.0 for f in feat_names}
+        res_lasso = list(z_y)
+        epochs_run_m1 = 0
+        converged_m1 = False
+        last_max_delta_m1 = 0.0
+        for ep in range(1, max_epochs + 1):
+            epochs_run_m1 = ep
+            max_delta = 0.0
+            for f in ordered_feats:
+                zx = z_x[f]
+                old_b = betas_lasso[f]
+                rho = old_b + (sum(zx[i] * res_lasso[i] for i in range(n)) / n)
+                new_b = _proximal_regularized_update(rho, reg_type, reg_lambda)
+                diff = new_b - old_b
+                abs_d = abs(diff)
+                if abs_d > max_delta:
+                    max_delta = abs_d
+                if abs_d > 1e-9:
+                    for i in range(n):
+                        res_lasso[i] -= diff * zx[i]
+                    betas_lasso[f] = new_b
+            last_max_delta_m1 = round(max_delta, 6)
+            if max_delta < conv_tol:
+                converged_m1 = True
+                break
+        raw_lasso = {f: abs(betas_lasso[f]) + 0.12 * abs_r[f] for f in feat_names}
+        per_model_ms["L1_LASSO"] = round((time.perf_counter() - t_m1) * 1000.0, 1)
+        telemetry["L1_LASSO"] = {
+            "active": True,
+            "status": "ACTIVE",
+            "reg_type": reg_type,
+            "reg_lambda": reg_lambda,
+            "epochs_run": epochs_run_m1,
+            "epochs_executed": epochs_run_m1,
+            "max_epochs": max_epochs,
+            "converged_early": converged_m1,
+            "final_max_delta": last_max_delta_m1,
+            "elapsed_ms": per_model_ms["L1_LASSO"],
+            "effective_hyperparams": f"{reg_type} (λ={reg_lambda}, tol={conv_tol})",
+        }
+    else:
+        raw_lasso = {f: 0.0 for f in feat_names}
+        per_model_ms["L1_LASSO"] = 0.0
+        telemetry["L1_LASSO"] = {
+            "active": False,
+            "status": "SKIPPED",
+            "reg_type": reg_type,
+            "reg_lambda": reg_lambda,
+            "epochs_run": 0,
+            "epochs_executed": 0,
+            "max_epochs": max_epochs,
+            "converged_early": False,
+            "final_max_delta": 0.0,
+            "elapsed_ms": 0.0,
+            "effective_hyperparams": "Skipped by Mode/User",
+        }
+
+    # ------------------------------------------------------------------------
+    # Model 2: Random Forest Impurity Importance (Configurable Trees, Depth & Leaves)
+    # ------------------------------------------------------------------------
+    if "RANDOM_FOREST" in active_set:
+        t_m2 = time.perf_counter()
+        rf_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
+        rng_rf = random.Random(42)
+        m_try = max(6, int(math.sqrt(len(feat_names))) + 2)
+        total_leaves_rf = 0
+        for t_idx in range(n_trees):
+            boot_indices = [rng_rf.randrange(n) for _ in range(n)]
+            sub_feats = rng_rf.sample(feat_names, min(len(feat_names), m_try))
+            for top_f in ordered_feats[:4]:
+                if top_f not in sub_feats and (t_idx % 2 == 0):
+                    sub_feats.append(top_f)
+
+            tree_gains, _, leaves_cnt = _fit_bounded_tree(
+                feature_vectors=feature_vectors,
+                ys=ys,
+                row_indices=boot_indices,
+                candidate_feats=sub_feats,
+                max_depth=max_depth,
+                max_leaves=max_leaves,
+                num_bins=split_bins,
+                min_impurity_gain=min_gain,
+            )
+            total_leaves_rf += leaves_cnt
+            for f_k, g_val in tree_gains.items():
+                rf_scores[f_k] += g_val
+
+        for f in feat_names:
+            rf_scores[f] += 0.25 * stump_gain[f]
+        per_model_ms["RANDOM_FOREST"] = round((time.perf_counter() - t_m2) * 1000.0, 1)
+        avg_leaves = round(total_leaves_rf / max(1, n_trees), 1)
+        telemetry["RANDOM_FOREST"] = {
+            "active": True,
+            "status": "ACTIVE",
+            "n_trees": n_trees,
+            "max_depth": max_depth,
+            "max_leaves": max_leaves,
+            "epochs_executed": n_trees,
+            "max_epochs": n_trees,
+            "converged_early": False,
+            "final_max_delta": avg_leaves,
+            "elapsed_ms": per_model_ms["RANDOM_FOREST"],
+            "effective_hyperparams": f"{n_trees} Trees • Depth≤{max_depth} • Leaves≤{min(max_leaves, 1 << max_depth)} (Avg {avg_leaves})",
+        }
+    else:
+        rf_scores = {f: 0.0 for f in feat_names}
+        per_model_ms["RANDOM_FOREST"] = 0.0
+        telemetry["RANDOM_FOREST"] = {
+            "active": False,
+            "status": "SKIPPED",
+            "n_trees": n_trees,
+            "max_depth": max_depth,
+            "max_leaves": max_leaves,
+            "epochs_executed": 0,
+            "max_epochs": n_trees,
+            "converged_early": False,
+            "final_max_delta": 0.0,
+            "elapsed_ms": 0.0,
+            "effective_hyperparams": "Skipped by Mode/User",
+        }
+
+    # ------------------------------------------------------------------------
+    # Model 3: Gradient Boosted Decision Trees (Configurable Stages, Depth, Leaves & LR)
+    # ------------------------------------------------------------------------
+    if "GRADIENT_BOOSTING" in active_set:
+        t_m3 = time.perf_counter()
+        gb_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
+        mean_y = sum(ys) / n
+        residuals = [y - mean_y for y in ys]
+        all_row_indices = list(range(n))
+        gb_candidate_feats = ordered_feats[:28] + [
+            f for f in feat_names if f.startswith("__HYP_") and f not in ordered_feats[:28]
+        ]
+        gb_depth = 1 if max_depth <= 2 else min(3, max_depth - 1)
+        gb_leaves = 2 if gb_depth == 1 else max(2, min(8, max_leaves))
+        stages_run = 0
+        gb_converged = False
+        prev_mse = sum(r * r for r in residuals) / n
+
+        for stage in range(max_epochs):
+            stages_run = stage + 1
+            decay = math.pow(0.90, stage)
+            if gb_depth == 1:
+                stage_gains: List[Tuple[float, str, float, float, float]] = []
+                for f in gb_candidate_feats:
+                    xs_f = feature_vectors[f]
+                    th, low_m, high_m, gain = _tree_stump_importance(
+                        xs_f,
+                        residuals,
+                        num_bins=split_bins,
+                        min_impurity_gain=min_gain,
+                    )
+                    stage_gains.append((gain, f, th, low_m, high_m))
+                stage_gains.sort(key=lambda x: -x[0])
+                win_gain, win_f, win_th, win_low, win_high = stage_gains[0]
+                gb_scores[win_f] += win_gain * decay
+                for runner_gain, runner_f, _, _, _ in stage_gains[1:4]:
+                    gb_scores[runner_f] += runner_gain * 0.30 * decay
+                xs_win = feature_vectors[win_f]
+                for i in range(n):
+                    pred = win_low if xs_win[i] <= win_th else win_high
+                    residuals[i] -= lr * pred
             else:
-                new_b = 0.0
-            diff = new_b - old_b
-            if abs(diff) > 1e-9:
-                for i in range(n):
-                    res_lasso[i] -= diff * zx[i]
-                betas_lasso[f] = new_b
-    raw_lasso = {f: abs(betas_lasso[f]) + 0.12 * abs_r[f] for f in feat_names}
-    per_model_ms["L1_LASSO"] = round((time.perf_counter() - t_m1) * 1000.0, 1)
+                tree_gains, leaf_preds, _ = _fit_bounded_tree(
+                    feature_vectors=feature_vectors,
+                    ys=residuals,
+                    row_indices=all_row_indices,
+                    candidate_feats=gb_candidate_feats,
+                    max_depth=gb_depth,
+                    max_leaves=gb_leaves,
+                    num_bins=split_bins,
+                    min_impurity_gain=min_gain,
+                )
+                for f_k, g_val in tree_gains.items():
+                    gb_scores[f_k] += g_val * decay
+                if leaf_preds:
+                    for i in range(n):
+                        residuals[i] -= lr * leaf_preds.get(i, 0.0)
+
+            cur_mse = sum(r * r for r in residuals) / n
+            rel_drop = abs(prev_mse - cur_mse) / max(1e-9, prev_mse)
+            prev_mse = cur_mse
+            if stage >= 2 and rel_drop < conv_tol * 0.25:
+                gb_converged = True
+                break
+
+        for f in feat_names:
+            gb_scores[f] += 0.12 * stump_gain[f]
+        per_model_ms["GRADIENT_BOOSTING"] = round((time.perf_counter() - t_m3) * 1000.0, 1)
+        telemetry["GRADIENT_BOOSTING"] = {
+            "active": True,
+            "status": "ACTIVE",
+            "rounds_run": stages_run,
+            "epochs_executed": stages_run,
+            "max_epochs": max_epochs,
+            "learning_rate": lr,
+            "converged_early": gb_converged,
+            "final_max_delta": round(prev_mse, 4),
+            "elapsed_ms": per_model_ms["GRADIENT_BOOSTING"],
+            "effective_hyperparams": f"{stages_run}/{max_epochs} Stages • lr={lr} • Depth≤{gb_depth} • Leaves≤{gb_leaves}",
+        }
+    else:
+        gb_scores = {f: 0.0 for f in feat_names}
+        per_model_ms["GRADIENT_BOOSTING"] = 0.0
+        telemetry["GRADIENT_BOOSTING"] = {
+            "active": False,
+            "status": "SKIPPED",
+            "rounds_run": 0,
+            "epochs_executed": 0,
+            "max_epochs": max_epochs,
+            "learning_rate": lr,
+            "converged_early": False,
+            "final_max_delta": 0.0,
+            "elapsed_ms": 0.0,
+            "effective_hyperparams": "Skipped by Mode/User",
+        }
 
     # ------------------------------------------------------------------------
-    # Model 2: Random Forest Impurity Importance (24 Bootstrap Depth-2 Trees)
+    # Model 4: Out-of-Sample Permutation Importance on Penalized Predictor
     # ------------------------------------------------------------------------
-    t_m2 = time.perf_counter()
-    rf_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
-    rng_rf = random.Random(42)
-    m_try = max(6, int(math.sqrt(len(feat_names))) + 2)
-    for t_idx in range(24):
-        boot_indices = [rng_rf.randrange(n) for _ in range(n)]
-        sub_feats = rng_rf.sample(feat_names, min(len(feat_names), m_try))
-        # Ensure top candidates are sampled regularly alongside random subspace
-        for top_f in ordered_feats[:4]:
-            if top_f not in sub_feats and (t_idx % 2 == 0):
-                sub_feats.append(top_f)
+    if "PERMUTATION_RIDGE" in active_set:
+        t_m4 = time.perf_counter()
+        betas_ridge: Dict[str, float] = {f: 0.0 for f in feat_names}
+        res_ridge = list(z_y)
+        eff_penalty = reg_lambda * (3.2 if reg_type == "L2" else (2.0 if reg_type == "ELASTIC_NET" else 4.0))
+        ridge_epochs = max(2, min(max_epochs, 16))
+        epochs_run_m4 = 0
+        converged_m4 = False
+        for ep in range(1, ridge_epochs + 1):
+            epochs_run_m4 = ep
+            max_d4 = 0.0
+            for f in ordered_feats:
+                zx = z_x[f]
+                old_b = betas_ridge[f]
+                grad = sum(zx[i] * res_ridge[i] for i in range(n)) / n
+                new_b = (old_b + grad) / (1.0 + eff_penalty)
+                diff = new_b - old_b
+                if abs(diff) > max_d4:
+                    max_d4 = abs(diff)
+                if abs(diff) > 1e-9:
+                    for i in range(n):
+                        res_ridge[i] -= diff * zx[i]
+                    betas_ridge[f] = new_b
+            if max_d4 < conv_tol:
+                converged_m4 = True
+                break
 
-        best_root_f = sub_feats[0]
-        best_root_gain = -1.0
-        best_root_thresh = 0.5
-        by = [ys[i] for i in boot_indices]
-
-        for f in sub_feats:
-            bx = [feature_vectors[f][i] for i in boot_indices]
-            th, _, _, gain = _tree_stump_importance(bx, by)
-            if gain > best_root_gain:
-                best_root_gain = gain
-                best_root_f = f
-                best_root_thresh = th
-
-        rf_scores[best_root_f] += max(0.0, best_root_gain) * 1.35
-
-        # Depth-2 child splits
-        left_idx = [i for i in boot_indices if feature_vectors[best_root_f][i] <= best_root_thresh]
-        right_idx = [i for i in boot_indices if feature_vectors[best_root_f][i] > best_root_thresh]
-        for child_idx in (left_idx, right_idx):
-            if len(child_idx) >= 16:
-                cy = [ys[i] for i in child_idx]
-                best_cf = sub_feats[0]
-                best_cgain = -1.0
-                for f in sub_feats:
-                    cx = [feature_vectors[f][i] for i in child_idx]
-                    _, _, _, cgain = _tree_stump_importance(cx, cy)
-                    if cgain > best_cgain:
-                        best_cgain = cgain
-                        best_cf = f
-                rf_scores[best_cf] += max(0.0, best_cgain) * (len(child_idx) / n) * 0.65
-
-    for f in feat_names:
-        rf_scores[f] += 0.25 * stump_gain[f]
-    per_model_ms["RANDOM_FOREST"] = round((time.perf_counter() - t_m2) * 1000.0, 1)
-
-    # ------------------------------------------------------------------------
-    # Model 3: Gradient Boosted Decision Trees (16 Additive Stages, lr=0.18)
-    # ------------------------------------------------------------------------
-    t_m3 = time.perf_counter()
-    gb_scores: Dict[str, float] = {f: 0.0 for f in feat_names}
-    mean_y = sum(ys) / n
-    residuals = [y - mean_y for y in ys]
-    lr = 0.18
-    # Evaluate top 28 candidate features + any synthetic hypothesis features in each boosting stage
-    gb_candidate_feats = ordered_feats[:28] + [f for f in feat_names if f.startswith("__HYP_") and f not in ordered_feats[:28]]
-    for stage in range(16):
-        stage_gains: List[Tuple[float, str, float, float, float]] = []
-        for f in gb_candidate_feats:
-            xs_f = feature_vectors[f]
-            th, low_m, high_m, gain = _tree_stump_importance(xs_f, residuals)
-            stage_gains.append((gain, f, th, low_m, high_m))
-        stage_gains.sort(key=lambda x: -x[0])
-        win_gain, win_f, win_th, win_low, win_high = stage_gains[0]
-        decay = math.pow(0.90, stage)
-        gb_scores[win_f] += win_gain * decay
-        # Credit close runner-up splits in this boosting round
-        for runner_gain, runner_f, _, _, _ in stage_gains[1:4]:
-            gb_scores[runner_f] += runner_gain * 0.30 * decay
-        xs_win = feature_vectors[win_f]
-        for i in range(n):
-            pred = win_low if xs_win[i] <= win_th else win_high
-            residuals[i] -= lr * pred
-    for f in feat_names:
-        gb_scores[f] += 0.12 * stump_gain[f]
-    per_model_ms["GRADIENT_BOOSTING"] = round((time.perf_counter() - t_m3) * 1000.0, 1)
-
-    # ------------------------------------------------------------------------
-    # Model 4: Permutation Importance on L2 Ridge Predictor
-    # ------------------------------------------------------------------------
-    t_m4 = time.perf_counter()
-    betas_ridge: Dict[str, float] = {f: 0.0 for f in feat_names}
-    res_ridge = list(z_y)
-    l2_penalty = 0.30
-    for _ in range(8):
-        for f in ordered_feats:
+        base_mse = sum(r * r for r in res_ridge) / n
+        perm_scores: Dict[str, float] = {}
+        for idx_f, f in enumerate(feat_names):
+            rng_p = random.Random(200 + idx_f)
             zx = z_x[f]
-            old_b = betas_ridge[f]
-            grad = sum(zx[i] * res_ridge[i] for i in range(n)) / n
-            new_b = (old_b + grad) / (1.0 + l2_penalty)
-            diff = new_b - old_b
-            if abs(diff) > 1e-9:
-                for i in range(n):
-                    res_ridge[i] -= diff * zx[i]
-                betas_ridge[f] = new_b
-
-    base_mse = sum(r * r for r in res_ridge) / n
-    perm_scores: Dict[str, float] = {}
-    for idx_f, f in enumerate(feat_names):
-        rng_p = random.Random(200 + idx_f)
-        zx = z_x[f]
-        shuffled_zx = list(zx)
-        rng_p.shuffle(shuffled_zx)
-        b_f = betas_ridge[f]
-        perm_mse = 0.0
-        for i in range(n):
-            # Replacing zx[i] with shuffled_zx[i] shifts residual by b_f * (zx[i] - shuffled_zx[i])
-            r_perm = res_ridge[i] + b_f * (zx[i] - shuffled_zx[i])
-            perm_mse += r_perm * r_perm
-        perm_mse /= n
-        delta_mse = max(0.0, perm_mse - base_mse)
-        perm_scores[f] = delta_mse + 0.10 * (abs_r[f] ** 2)
-    per_model_ms["PERMUTATION_RIDGE"] = round((time.perf_counter() - t_m4) * 1000.0, 1)
+            shuffled_zx = list(zx)
+            rng_p.shuffle(shuffled_zx)
+            b_f = betas_ridge[f]
+            perm_mse = 0.0
+            for i in range(n):
+                r_perm = res_ridge[i] + b_f * (zx[i] - shuffled_zx[i])
+                perm_mse += r_perm * r_perm
+            perm_mse /= n
+            delta_mse = max(0.0, perm_mse - base_mse)
+            perm_scores[f] = delta_mse + 0.10 * (abs_r[f] ** 2)
+        per_model_ms["PERMUTATION_RIDGE"] = round((time.perf_counter() - t_m4) * 1000.0, 1)
+        telemetry["PERMUTATION_RIDGE"] = {
+            "active": True,
+            "status": "ACTIVE",
+            "epochs_executed": epochs_run_m4,
+            "max_epochs": ridge_epochs,
+            "converged_early": converged_m4,
+            "final_max_delta": round(base_mse, 4),
+            "elapsed_ms": per_model_ms["PERMUTATION_RIDGE"],
+            "effective_hyperparams": f"Permutation ({reg_type}, λ_eff={round(eff_penalty, 3)})",
+        }
+    else:
+        perm_scores = {f: 0.0 for f in feat_names}
+        per_model_ms["PERMUTATION_RIDGE"] = 0.0
+        telemetry["PERMUTATION_RIDGE"] = {
+            "active": False,
+            "status": "SKIPPED",
+            "epochs_executed": 0,
+            "max_epochs": max_epochs,
+            "converged_early": False,
+            "final_max_delta": 0.0,
+            "elapsed_ms": 0.0,
+            "effective_hyperparams": "Skipped by Mode/User",
+        }
 
     # ------------------------------------------------------------------------
     # Model 5: Non-Parametric Mutual Information + Spearman Rank Selector
     # ------------------------------------------------------------------------
-    t_m5 = time.perf_counter()
-    mi_scores: Dict[str, float] = {}
-    # Rank transform y
-    y_order = sorted(range(n), key=lambda i: ys[i])
-    y_ranks = [0.0] * n
-    for r_pos, orig_i in enumerate(y_order):
-        y_ranks[orig_i] = float(r_pos)
-    y_tertiles = [min(2, int((r_pos * 3) / n)) for r_pos in y_ranks]
+    if "MUTUAL_INFO_RANK" in active_set:
+        t_m5 = time.perf_counter()
+        mi_scores: Dict[str, float] = {}
+        q_bins = 3 if split_bins <= 5 else (4 if split_bins == 7 else 5)
+        y_order = sorted(range(n), key=lambda i: ys[i])
+        y_ranks = [0.0] * n
+        for r_pos, orig_i in enumerate(y_order):
+            y_ranks[orig_i] = float(r_pos)
+        y_qbins = [min(q_bins - 1, int((r_pos * q_bins) / n)) for r_pos in y_ranks]
 
-    for f in feat_names:
-        xf = feature_vectors[f]
-        x_order = sorted(range(n), key=lambda i: xf[i])
-        x_ranks = [0.0] * n
-        for r_pos, orig_i in enumerate(x_order):
-            x_ranks[orig_i] = float(r_pos)
-        spearman_r, _, _ = _pearson_r_and_p(x_ranks, y_ranks)
+        for f in feat_names:
+            xf = feature_vectors[f]
+            x_order = sorted(range(n), key=lambda i: xf[i])
+            x_ranks = [0.0] * n
+            for r_pos, orig_i in enumerate(x_order):
+                x_ranks[orig_i] = float(r_pos)
+            spearman_r, _, _ = _pearson_r_and_p(x_ranks, y_ranks)
 
-        # 3x3 quantile Mutual Information I(X; Y)
-        counts_xy = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-        counts_x = [0, 0, 0]
-        counts_y = [0, 0, 0]
-        for i in range(n):
-            bx = min(2, int((x_ranks[i] * 3) / n))
-            by_bin = y_tertiles[i]
-            counts_xy[bx][by_bin] += 1
-            counts_x[bx] += 1
-            counts_y[by_bin] += 1
+            counts_xy = [[0] * q_bins for _ in range(q_bins)]
+            counts_x = [0] * q_bins
+            counts_y = [0] * q_bins
+            for i in range(n):
+                bx = min(q_bins - 1, int((x_ranks[i] * q_bins) / n))
+                by_bin = y_qbins[i]
+                counts_xy[bx][by_bin] += 1
+                counts_x[bx] += 1
+                counts_y[by_bin] += 1
 
-        mi_val = 0.0
-        for bx in range(3):
-            for by_bin in range(3):
-                c_xy = counts_xy[bx][by_bin]
-                if c_xy > 0 and counts_x[bx] > 0 and counts_y[by_bin] > 0:
-                    p_xy = c_xy / n
-                    p_x = counts_x[bx] / n
-                    p_y = counts_y[by_bin] / n
-                    mi_val += p_xy * math.log(p_xy / (p_x * p_y) + 1e-12)
+            mi_val = 0.0
+            for bx in range(q_bins):
+                for by_bin in range(q_bins):
+                    c_xy = counts_xy[bx][by_bin]
+                    if c_xy > 0 and counts_x[bx] > 0 and counts_y[by_bin] > 0:
+                        p_xy = c_xy / n
+                        p_x = counts_x[bx] / n
+                        p_y = counts_y[by_bin] / n
+                        mi_val += p_xy * math.log(p_xy / (p_x * p_y) + 1e-12)
 
-        mi_scores[f] = 0.55 * abs(spearman_r) + 0.45 * max(0.0, mi_val)
-    per_model_ms["MUTUAL_INFO_RANK"] = round((time.perf_counter() - t_m5) * 1000.0, 1)
+            mi_scores[f] = 0.55 * abs(spearman_r) + 0.45 * max(0.0, mi_val)
+        per_model_ms["MUTUAL_INFO_RANK"] = round((time.perf_counter() - t_m5) * 1000.0, 1)
+        telemetry["MUTUAL_INFO_RANK"] = {
+            "active": True,
+            "status": "ACTIVE",
+            "epochs_executed": 1,
+            "max_epochs": 1,
+            "converged_early": True,
+            "final_max_delta": 0.0,
+            "elapsed_ms": per_model_ms["MUTUAL_INFO_RANK"],
+            "effective_hyperparams": f"{q_bins}×{q_bins} Quantile MI Grid + Spearman",
+        }
+    else:
+        mi_scores = {f: 0.0 for f in feat_names}
+        per_model_ms["MUTUAL_INFO_RANK"] = 0.0
+        telemetry["MUTUAL_INFO_RANK"] = {
+            "active": False,
+            "status": "SKIPPED",
+            "epochs_executed": 0,
+            "max_epochs": 1,
+            "converged_early": False,
+            "final_max_delta": 0.0,
+            "elapsed_ms": 0.0,
+            "effective_hyperparams": "Skipped by Mode/User",
+        }
 
     raw_by_model = {
         "L1_LASSO": raw_lasso,
@@ -1668,18 +2266,24 @@ def _compute_5_ml_model_scores(
     # Normalize each model's importance scores to [0.0, 100.0]
     norm_by_model: Dict[str, Dict[str, float]] = {}
     for m_id, m_dict in raw_by_model.items():
+        if m_id not in active_set:
+            norm_by_model[m_id] = {f: 0.0 for f in feat_names}
+            continue
         max_v = max(m_dict.values()) if m_dict else 1.0
         if max_v < 1e-12:
             max_v = 1.0
         norm_by_model[m_id] = {
             f: round(100.0 * (val / max_v), 1) for f, val in m_dict.items()
         }
+    if return_telemetry:
+        return norm_by_model, per_model_ms, telemetry
     return norm_by_model, per_model_ms
 
 
 def build_feature_selection_a2ui(
     hypothesis_results: List[Dict[str, Any]],
     top_k_cutoff: int = 5,
+    mode_name: str = "Balanced Mode",
 ) -> Dict[str, Any]:
     """Build A2UI v0.9 updateComponents payload for Screen 3 Multi-Model Feature Selection."""
     card_ids: List[str] = []
@@ -1712,7 +2316,7 @@ def build_feature_selection_a2ui(
         {
             "id": "fs_header",
             "component": "Text",
-            "text": f"Multi-Model Feature Selection Consistency (Top-{top_k_cutoff} Threshold)",
+            "text": f"Multi-Model Feature Selection ({mode_name} • Top-{top_k_cutoff} Threshold)",
             "variant": "h2",
         },
     ] + components
@@ -1731,17 +2335,33 @@ def build_feature_selection_a2ui(
 def run_multi_model_feature_selection(
     hypotheses: Optional[List[Dict[str, Any]]] = None,
     selected_columns: Optional[List[str]] = None,
-    top_k_cutoff: int = 5,
+    top_k_cutoff: Optional[int] = None,
     dataset_id: str = "lot_alpha",
     data_dir: Optional[Path] = None,
     bypass_subsample: bool = False,
+    mode_id: str = "BALANCED_FAB",
+    model_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Evaluate hypotheses and active parameters across 5 ML feature selection models.
+    """Evaluate hypotheses and active parameters across configurable ML feature selection models.
 
-    Checks whether each hypothesis's feature(s) consistently rank in the Top-K features
-    across L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge, and Mutual Info.
+    Supports 4 Process Engineer Modes (`FAST_TRIAGE`, `BALANCED_FAB`, `DEEP_INTERACTION`,
+    `STRICT_AUDIT`) plus full user editing of prefilled parameters (`active_models`,
+    `regularization_type`, `reg_lambda`, `max_depth`, `max_leaves`, `n_trees`, `epochs`,
+    `learning_rate`, `convergence_tol`, `split_threshold_bins`, `min_impurity_gain`,
+    `top_k_cutoff`, `consensus_min_models`, `wafer_subsample_cap`).
     """
     t0 = time.perf_counter()
+    resolved_cfg = resolve_feature_selection_config(
+        mode_id=mode_id,
+        custom_params=model_config,
+        top_k_override=top_k_cutoff,
+    )
+    cutoff = resolved_cfg["top_k_cutoff"]
+    consensus_min = resolved_cfg["consensus_min_models"]
+    active_model_ids = resolved_cfg["active_models"]
+    active_model_set = set(active_model_ids)
+    total_active_m = max(1, len(active_model_ids))
+
     ds_key = normalize_dataset_id(dataset_id)
     ds_meta = DATASET_CATALOG[ds_key]
     if bypass_subsample:
@@ -1752,8 +2372,6 @@ def run_multi_model_feature_selection(
     cols = [c for c in (selected_columns or all_param_cols) if c in all_param_cols]
     if not cols:
         cols = all_param_cols
-
-    cutoff = max(3, min(15, int(top_k_cutoff or 5)))
 
     # If no hypotheses passed, discover candidate hypotheses on active subset + dataset
     if not hypotheses:
@@ -1770,8 +2388,8 @@ def run_multi_model_feature_selection(
     full_abs_r = {c: abs(full_base_stats[c]["r"]) for c in cols if c in full_base_stats}
     full_stump = {c: full_base_stats[c]["ml_importance"] for c in cols if c in full_base_stats}
 
-    # Use stratified 1,500-wafer subsample for interactive mode, or all 50,000 rows when bypass_subsample=True
-    work_rows = rows if bypass_subsample else _get_work_rows(rows, max_rows=1500)
+    subsample_cap = resolved_cfg["wafer_subsample_cap"]
+    work_rows = rows if bypass_subsample else _get_work_rows(rows, max_rows=subsample_cap)
     work_ys = [r["yield_pct"] for r in work_rows]
 
     # 1. Build feature vectors for all active columns + synthetic hypothesis vectors in a single pass
@@ -1816,11 +2434,13 @@ def run_multi_model_feature_selection(
             synth_vec = [r[c_single] for r in work_rows]
         combined_vectors[synth_key] = synth_vec
 
-    all_model_scores, per_model_ms = _compute_5_ml_model_scores(
+    all_model_scores, per_model_ms, convergence_telemetry = _compute_5_ml_model_scores(
         combined_vectors,
         work_ys,
         full_abs_r=full_abs_r,
         full_stump_gain=full_stump,
+        config=resolved_cfg,
+        return_telemetry=True,
     )
 
     # Extract base column scores and 1-indexed ranks across `cols`
@@ -1828,6 +2448,10 @@ def run_multi_model_feature_selection(
     base_model_ranks: Dict[str, Dict[str, int]] = {}
     for m_spec in ML_MODEL_SPECS:
         m_id = m_spec["model_id"]
+        if m_id not in active_model_set:
+            base_model_scores[m_id] = {c: 0.0 for c in cols}
+            base_model_ranks[m_id] = {c: len(cols) for c in cols}
+            continue
         max_base = max((all_model_scores[m_id].get(c, 0.0) for c in cols), default=1.0) or 1.0
         base_model_scores[m_id] = {
             c: round(100.0 * (all_model_scores[m_id].get(c, 0.0) / max_base), 1)
@@ -1836,7 +2460,7 @@ def run_multi_model_feature_selection(
         sorted_cols = sorted(cols, key=lambda c: -base_model_scores[m_id].get(c, 0.0))
         base_model_ranks[m_id] = {c: rk for rk, c in enumerate(sorted_cols, start=1)}
 
-    # 2. Build Global Top Features Leaderboard across the 5 ML models
+    # 2. Build Global Top Features Leaderboard across active ML models
     global_features: List[Dict[str, Any]] = []
     for c in cols:
         per_m = []
@@ -1845,30 +2469,34 @@ def run_multi_model_feature_selection(
         scores_list = []
         for m_spec in ML_MODEL_SPECS:
             m_id = m_spec["model_id"]
-            rk = base_model_ranks[m_id][c]
-            sc = base_model_scores[m_id][c]
-            is_top = rk <= cutoff
+            is_active = m_id in active_model_set
+            rk = base_model_ranks[m_id][c] if is_active else None
+            sc = base_model_scores[m_id][c] if is_active else 0.0
+            is_top = bool(is_active and rk is not None and rk <= cutoff)
             if is_top:
                 in_top_count += 1
-            ranks_list.append(rk)
-            scores_list.append(sc)
+            if is_active and rk is not None:
+                ranks_list.append(rk)
+                scores_list.append(sc)
             per_m.append({
                 "model_id": m_id,
                 "short_name": m_spec["short_name"],
+                "active": is_active,
+                "is_active": is_active,
                 "rank": rk,
                 "in_top_k": is_top,
                 "importance_pct": sc,
             })
-        mean_rk = round(sum(ranks_list) / len(ranks_list), 1)
-        mean_sc = round(sum(scores_list) / len(scores_list), 1)
+        mean_rk = round(sum(ranks_list) / max(1, len(ranks_list)), 1)
+        mean_sc = round(sum(scores_list) / max(1, len(scores_list)), 1)
         global_features.append({
             "column": c,
             "short_name": _format_short_param(c),
             "hypothesis_id": f"HYP_SINGLE_{c}",
             "models_in_top_k": in_top_count,
-            "total_models": len(ML_MODEL_SPECS),
-            "consistency_hero": f"{in_top_count} / {len(ML_MODEL_SPECS)}",
-            "consistency_pct": int(round(100.0 * in_top_count / len(ML_MODEL_SPECS))),
+            "total_models": total_active_m,
+            "consistency_hero": f"{in_top_count} / {total_active_m}",
+            "consistency_pct": int(round(100.0 * in_top_count / total_active_m)),
             "mean_rank": mean_rk,
             "mean_importance_pct": mean_sc,
             "per_model_ranks": per_m,
@@ -1876,7 +2504,7 @@ def run_multi_model_feature_selection(
 
     global_features.sort(key=lambda x: (-x["models_in_top_k"], x["mean_rank"], -x["mean_importance_pct"]))
 
-    # 3. Evaluate each hypothesis across all 5 ML models
+    # 3. Evaluate each hypothesis across active ML models
     hypothesis_consistency: List[Dict[str, Any]] = []
     for idx, hyp in enumerate(hypotheses):
         h_id = hyp.get("hypothesis_id", "HYP_CUSTOM")
@@ -1887,6 +2515,8 @@ def run_multi_model_feature_selection(
 
         if len(params) == 1 and params[0] in STEP_OBFUSCATION_MAP.values():
             h_type = "step_level"
+
+        primary_col = params[0] if (params and params[0] in cols) else cols[0]
 
         if idx not in synth_key_by_idx and params and params[0] in cols:
             target_col = params[0]
@@ -1899,6 +2529,10 @@ def run_multi_model_feature_selection(
             h_ranks = {}
             for m_spec in ML_MODEL_SPECS:
                 m_id = m_spec["model_id"]
+                if m_id not in active_model_set:
+                    h_ranks[m_id] = len(pool_keys)
+                    h_scores[m_id] = 0.0
+                    continue
                 max_pool = max((all_model_scores[m_id].get(k, 0.0) for k in pool_keys), default=1.0) or 1.0
                 sorted_pool = sorted(pool_keys, key=lambda k: -all_model_scores[m_id].get(k, 0.0))
                 h_ranks[m_id] = sorted_pool.index(synth_key) + 1
@@ -1911,50 +2545,59 @@ def run_multi_model_feature_selection(
 
         for m_spec in ML_MODEL_SPECS:
             m_id = m_spec["model_id"]
-            rk = h_ranks[m_id]
-            sc = h_scores[m_id]
-            is_top = rk <= cutoff
+            is_active = m_id in active_model_set
+            rk = h_ranks[m_id] if is_active else None
+            sc = h_scores[m_id] if is_active else 0.0
+            is_top = bool(is_active and rk is not None and rk <= cutoff)
             if is_top:
                 in_top_k_count += 1
-            rk_vals.append(rk)
-            sc_vals.append(sc)
+            if is_active and rk is not None:
+                rk_vals.append(rk)
+                sc_vals.append(sc)
+            tel_m = convergence_telemetry.get(m_id, {})
             per_model_breakdown.append({
                 "model_id": m_id,
                 "model_name": m_spec["model_name"],
                 "short_name": m_spec["short_name"],
                 "family": m_spec["family"],
+                "active": is_active,
+                "is_active": is_active,
                 "rank": rk,
                 "in_top_k": is_top,
                 "importance_pct": sc,
                 "compute_ms": per_model_ms.get(m_id, 0.0),
-                "badge_text": f"✓ #{rk}" if is_top else f"✗ #{rk}",
+                "epochs_executed": tel_m.get("epochs_executed", 0),
+                "converged_early": tel_m.get("converged_early", False),
+                "badge_text": (f"✓ #{rk}" if is_top else f"✗ #{rk}") if is_active else "SKIPPED",
             })
 
-        total_m = len(ML_MODEL_SPECS)
-        cons_pct = int(round(100.0 * in_top_k_count / total_m))
-        mean_rk = round(sum(rk_vals) / total_m, 1)
-        mean_imp = round(sum(sc_vals) / total_m, 1)
+        cons_pct = int(round(100.0 * in_top_k_count / total_active_m))
+        mean_rk = round(sum(rk_vals) / max(1, len(rk_vals)), 1)
+        mean_imp = round(sum(sc_vals) / max(1, len(sc_vals)), 1)
+        partial_min = max(1, min(consensus_min - 1, total_active_m // 2))
 
-        if in_top_k_count >= 4:
+        if in_top_k_count >= consensus_min:
             verdict_label = "CONSISTENT TOP FEATURE"
             color = "emerald"
             takeaway = (
-                f"Appears in Top-{cutoff} features across {in_top_k_count}/{total_m} ML models "
-                f"(Avg Rank #{mean_rk:.1f}) — robust across linear, tree ensemble, and non-parametric selectors."
+                f"[{resolved_cfg['mode_short_name']}] Appears in Top-{cutoff} across {in_top_k_count}/{total_active_m} "
+                f"active ML models (Avg Rank #{mean_rk:.1f}, min required ≥{consensus_min}/{total_active_m} • "
+                f"Reg={resolved_cfg['regularization_type']}, Depth≤{resolved_cfg['max_depth']}, Leaves≤{resolved_cfg['max_leaves']})."
             )
-        elif in_top_k_count >= 2:
+        elif in_top_k_count >= partial_min and in_top_k_count > 0:
             verdict_label = "PARTIAL MODEL AGREEMENT"
             color = "amber"
             takeaway = (
-                f"Appears in Top-{cutoff} for {in_top_k_count}/{total_m} ML models "
-                f"(Avg Rank #{mean_rk:.1f}) — model-dependent signal; check for non-linear or collinear coupling."
+                f"[{resolved_cfg['mode_short_name']}] Appears in Top-{cutoff} for {in_top_k_count}/{total_active_m} "
+                f"active ML models (Avg Rank #{mean_rk:.1f}, threshold ≥{consensus_min}/{total_active_m}) — "
+                f"model-dependent signal; try Deep Coupling mode or Elastic-Net."
             )
         else:
             verdict_label = "NOT IN TOP FEATURES"
             color = "rose"
             takeaway = (
-                f"Appears in Top-{cutoff} for {in_top_k_count}/{total_m} ML models "
-                f"(Avg Rank #{mean_rk:.1f}) — consistently ranked outside top drivers across ML families."
+                f"[{resolved_cfg['mode_short_name']}] Appears in Top-{cutoff} for {in_top_k_count}/{total_active_m} "
+                f"active ML models (Avg Rank #{mean_rk:.1f}) — ranked outside top drivers under current thresholds."
             )
 
         hypothesis_consistency.append({
@@ -1963,12 +2606,13 @@ def run_multi_model_feature_selection(
             "short_title": short_title,
             "title": title,
             "parameters": params,
+            "primary_column": primary_col,
             "queue_status": hyp.get("queue_status", "CANDIDATE"),
             "models_in_top_k": in_top_k_count,
-            "total_models": total_m,
+            "total_models": total_active_m,
             "consistency_pct": cons_pct,
-            "consistency_hero": f"{in_top_k_count} / {total_m}",
-            "consistency_label": f"{cons_pct}% Model Consensus (Top-{cutoff})",
+            "consistency_hero": f"{in_top_k_count} / {total_active_m}",
+            "consistency_label": f"{cons_pct}% Consensus (Top-{cutoff} • Need ≥{consensus_min}/{total_active_m})",
             "mean_rank": mean_rk,
             "mean_rank_hero": f"#{mean_rk:.1f}",
             "mean_importance_pct": mean_imp,
@@ -1978,45 +2622,61 @@ def run_multi_model_feature_selection(
             "plain_english_takeaway": takeaway,
         })
 
-    consistent_hyps = [h for h in hypothesis_consistency if h["models_in_top_k"] >= 4]
+    consistent_hyps = [h for h in hypothesis_consistency if h["models_in_top_k"] >= consensus_min]
     top_global = global_features[0] if global_features else {
         "column": "STEP_A_TEMPERATURE_01",
-        "consistency_hero": "5 / 5",
+        "consistency_hero": f"{total_active_m} / {total_active_m}",
         "mean_rank": 1.0,
     }
 
-    # Compute cross-model Top-K Jaccard/overlap concordance among the 5 models
+    # Compute cross-model Top-K Jaccard/overlap concordance among the active models
     top_sets = [
-        {c for c, rk in base_model_ranks[m["model_id"]].items() if rk <= cutoff}
-        for m in ML_MODEL_SPECS
+        {c for c, rk in base_model_ranks[m_id].items() if rk <= cutoff}
+        for m_id in active_model_ids
     ]
     pair_overlaps = []
     for i in range(len(top_sets)):
         for j in range(i + 1, len(top_sets)):
             s1, s2 = top_sets[i], top_sets[j]
             pair_overlaps.append(len(s1 & s2) / max(1, cutoff))
-    concordance_pct = int(round(100.0 * (sum(pair_overlaps) / max(1, len(pair_overlaps)))))
+    concordance_pct = (
+        int(round(100.0 * (sum(pair_overlaps) / len(pair_overlaps))))
+        if pair_overlaps
+        else 100
+    )
     total_ms = round((time.perf_counter() - t0) * 1000.0, 1)
 
     summary_kpis = {
         "consistent_hypotheses_hero": f"{len(consistent_hyps)} / {len(hypothesis_consistency)}",
-        "consistent_hypotheses_label": f"Confirmed in Top-{cutoff} by ≥4/5 ML Models",
+        "consistent_hypotheses_label": (
+            f"Confirmed in Top-{cutoff} by ≥{consensus_min}/{total_active_m} Active ML Models "
+            f"({resolved_cfg['mode_short_name']})"
+        ),
         "top_consensus_hero": top_global["consistency_hero"],
         "top_consensus_param": top_global["column"],
         "top_consensus_rank": f"Avg Rank #{top_global['mean_rank']:.1f}",
         "ensemble_agreement_hero": f"{concordance_pct}%",
-        "ensemble_agreement_label": f"Cross-Model Top-{cutoff} Feature Concordance ({total_ms} ms | {len(rows):,} Wafers)",
+        "ensemble_agreement_label": (
+            f"Cross-Model Top-{cutoff} Concordance ({total_ms} ms | {len(work_rows):,}/{len(rows):,} Wafers)"
+        ),
     }
 
     models_with_timing = [
         {
             **m,
+            "active": m["model_id"] in active_model_set,
+            "is_active": m["model_id"] in active_model_set,
             "compute_ms": per_model_ms.get(m["model_id"], 0.0),
+            "telemetry": convergence_telemetry.get(m["model_id"], {}),
         }
         for m in ML_MODEL_SPECS
     ]
 
-    a2ui_msg = build_feature_selection_a2ui(hypothesis_consistency, top_k_cutoff=cutoff)
+    a2ui_msg = build_feature_selection_a2ui(
+        hypothesis_consistency,
+        top_k_cutoff=cutoff,
+        mode_name=resolved_cfg["mode_short_name"],
+    )
 
     return {
         "data": {
@@ -2024,12 +2684,19 @@ def run_multi_model_feature_selection(
             "dataset_name": ds_meta["name"],
             "dataset_short_name": ds_meta["short_name"],
             "active_columns_count": len(cols),
+            "active_models_count": total_active_m,
             "total_wafers_analyzed": len(rows),
             "ensemble_subsample_rows": len(work_rows),
             "total_cells_analyzed": len(rows) * len(cols),
             "total_compute_ms": total_ms,
             "per_model_compute_ms": per_model_ms,
             "top_k_cutoff": cutoff,
+            "consensus_min_models": consensus_min,
+            "mode_id": resolved_cfg["mode_id"],
+            "mode_metadata": ENGINEERING_MODES[resolved_cfg["mode_id"]],
+            "engineering_modes": list(ENGINEERING_MODES.values()),
+            "resolved_config": resolved_cfg,
+            "convergence_telemetry": convergence_telemetry,
             "models_metadata": models_with_timing,
             "summary_kpis": summary_kpis,
             "hypothesis_consistency": hypothesis_consistency,
@@ -2038,6 +2705,7 @@ def run_multi_model_feature_selection(
         "ui": a2ui_msg,
         "ui_available": True,
     }
+
 
 
 

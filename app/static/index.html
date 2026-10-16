@@ -493,39 +493,243 @@
     <!-- ================================================================== -->
     <section id="screen3" class="hidden space-y-4">
 
-      <!-- Screen 3 Top Control & Interactive Parameter Selector Bar -->
-      <div class="bp-card p-4 space-y-3">
-        <!-- Row 1: Title, Active Dataset/Telemetry Badge, Full-Scan Toggle & Top-K Controls -->
+      <!-- Screen 3 Top Control, Process Engineer Modes & Editable Hyperparameter Workbench -->
+      <div class="bp-card p-4 space-y-3.5">
+        <!-- Row 1: Title, Active Dataset/Telemetry Badge, Full-Scan Toggle & Run Button -->
         <div class="flex items-center justify-between flex-wrap gap-3 pb-2.5 border-b border-[#DCE0E5]">
           <div class="flex items-center gap-2.5 flex-wrap">
             <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-bold intent-blue">
               <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M2 12h3v3H2v-3zm5-5h3v8H7V7zm5-5h3v13h-3V2z"/></svg>
-              5-Model Ensemble Feature Selector
+              Multi-Model Feature Selection Workbench
             </span>
             <span id="fsDatasetBadge" class="text-xs font-bold text-[#1C2127]">
               1. Lot Alpha (STEP_A Thermal) • 52/100 Active Columns
+            </span>
+            <span id="fsCustomOverrideBadge" class="px-2 py-0.5 rounded text-[11px] font-bold intent-emerald">
+              ✓ Mode Preset Defaults
             </span>
           </div>
 
           <div class="flex items-center gap-2 flex-wrap">
             <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold bg-[#F6F7F9] text-[#1C2127] border border-[#DCE0E5] cursor-pointer select-none"
-              title="When checked on 50,000-wafer Lot Delta, bypasses the 3,000-wafer stratified fast-interactive subsample and runs all 5 ML models across all 50,000 rows">
+              title="When checked on 50,000-wafer Lot Delta, bypasses the wafer subsample cap and runs active ML models across all 50,000 rows">
               <input id="fsBypassSubsampleToggle" type="checkbox" onchange="runMultiModelFeatureSelection()" class="rounded accent-[#2D72D2]" />
               <span>Full 50k Scan (No Subsample)</span>
             </label>
-            <span class="text-xs font-bold text-[#5F6B7C] uppercase ml-1">Top-K:</span>
-            <button onclick="setTopKAndRun(3)" id="topKBtn3" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 3</button>
-            <button onclick="setTopKAndRun(5)" id="topKBtn5" class="px-2.5 py-1 rounded text-xs bp-btn-primary">Top 5 (Default)</button>
-            <button onclick="setTopKAndRun(10)" id="topKBtn10" class="px-2.5 py-1 rounded text-xs bp-btn-default">Top 10</button>
+            <span class="text-xs font-bold text-[#5F6B7C] uppercase ml-1">Quick Top-K:</span>
+            <button onclick="setTopKAndRun(3)" id="topKBtn3" class="px-2 py-1 rounded text-xs bp-btn-default">Top 3</button>
+            <button onclick="setTopKAndRun(5)" id="topKBtn5" class="px-2 py-1 rounded text-xs bp-btn-primary">Top 5</button>
+            <button onclick="setTopKAndRun(8)" id="topKBtn8" class="px-2 py-1 rounded text-xs bp-btn-default">Top 8</button>
+            <button onclick="setTopKAndRun(10)" id="topKBtn10" class="px-2 py-1 rounded text-xs bp-btn-default">Top 10</button>
+            <button onclick="resetFsModeToDefaults()"
+              title="Reset all edited hyperparameters and thresholds back to the selected Process Engineer Mode preset"
+              class="px-2.5 py-1 rounded text-xs bp-btn-default">
+              Reset Mode Defaults
+            </button>
             <button onclick="runMultiModelFeatureSelection()"
               class="px-3 py-1.5 rounded text-xs bp-btn-success inline-flex items-center gap-1.5">
               <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M13.65 2.35A8 8 0 1016 8h-2a6 6 0 11-1.76-4.24L10 6h6V0l-2.35 2.35z"/></svg>
-              Run 5 ML Models
+              Run Configured Models
             </button>
           </div>
         </div>
 
-        <!-- Row 2: Interactive Process Stage (STEP_A..STEP_E) & Sensor Category Parameter Selectors -->
+        <!-- Row 2: 4 Process-Engineer-Friendly Mode Preset Cards -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <span class="text-xs font-bold text-[#1C2127] uppercase tracking-wider">
+              1. Select Process Engineer Mode (Prefills Models, Epochs, Complexity &amp; Thresholds)
+            </span>
+            <span id="fsActiveModeSummary" class="text-[11px] text-[#5F6B7C]">
+              Standard shift-handover baseline across all 5 ML families (≥4/5 in Top-5).
+            </span>
+          </div>
+
+          <div id="fsModeSelectorGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <button type="button" onclick="selectFsEngineeringMode('FAST_TRIAGE')" data-fs-mode="FAST_TRIAGE"
+              class="fs-mode-card text-left p-2.5 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition space-y-1">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-xs font-bold text-[#1C2127]">⚡ Fast Triage Mode</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-amber">4 Models • 4 Epochs</span>
+              </div>
+              <div class="text-[11px] text-[#5F6B7C] leading-snug">
+                Classical L1 + Ridge + MI + Depth-1 Stumps (2 leaves, tol=0.01, Top-8) for rapid convergence.
+              </div>
+            </button>
+
+            <button type="button" onclick="selectFsEngineeringMode('BALANCED_FAB')" data-fs-mode="BALANCED_FAB"
+              class="fs-mode-card text-left p-2.5 rounded border border-[#2D72D2] bg-[#EDF3FB] transition space-y-1">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-xs font-bold text-[#1C2127]">⚖️ Balanced Fab (Default)</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-blue">5 Models • 12 Epochs</span>
+              </div>
+              <div class="text-[11px] text-[#5F6B7C] leading-snug">
+                Standard 5-model consensus: Elastic-Net, 24 Depth-2 RF trees (4 leaves), GBDT, Perm &amp; MI (Top-5).
+              </div>
+            </button>
+
+            <button type="button" onclick="selectFsEngineeringMode('DEEP_INTERACTION')" data-fs-mode="DEEP_INTERACTION"
+              class="fs-mode-card text-left p-2.5 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition space-y-1">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-xs font-bold text-[#1C2127]">🔬 Deep Coupling Mode</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-emerald">Depth 3 • 8 Leaves</span>
+              </div>
+              <div class="text-[11px] text-[#5F6B7C] leading-snug">
+                Captures non-linear chamber interactions: 40 trees, Depth-3 / 8-leaf splits, 9 bins, 24 epochs.
+              </div>
+            </button>
+
+            <button type="button" onclick="selectFsEngineeringMode('STRICT_AUDIT')" data-fs-mode="STRICT_AUDIT"
+              class="fs-mode-card text-left p-2.5 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition space-y-1">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-xs font-bold text-[#1C2127]">🛡️ Strict Spec Audit</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold intent-rose">5/5 Top-3 • L2 λ=0.22</span>
+              </div>
+              <div class="text-[11px] text-[#5F6B7C] leading-snug">
+                Conservative sign-off before spec lock: requires 5/5 unanimous Top-3 agreement &amp; heavy L2 penalty.
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Row 3: Prefilled & Editable Model, Hyperparameter & Threshold Controls -->
+        <div id="fsConfigPanel" class="rounded border border-[#DCE0E5] bg-[#F6F7F9] p-3 space-y-3">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold text-[#1C2127] uppercase tracking-wider">
+                2. Prefilled Model &amp; Hyperparameter Controls (Editable)
+              </span>
+              <span class="text-[11px] text-[#5F6B7C]">
+                All parameters are prefilled by the mode above — edit any value to customize regularization, tree depth/leaves, epochs, or thresholds
+              </span>
+            </div>
+          </div>
+
+          <!-- Active ML Models Checkboxes -->
+          <div class="bg-white rounded border border-[#DCE0E5] p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-bold text-[#1C2127] uppercase text-[11px] mr-1">Active ML Models:</span>
+              <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[#DCE0E5] bg-[#F6F7F9] cursor-pointer select-none">
+                <input type="checkbox" class="fs-model-cb rounded accent-[#2D72D2]" value="L1_LASSO" checked onchange="onFsParamEdited()" />
+                <span class="font-semibold text-[#1C2127]">1. Penalized Linear (Lasso/ENet)</span>
+              </label>
+              <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[#DCE0E5] bg-[#F6F7F9] cursor-pointer select-none">
+                <input type="checkbox" class="fs-model-cb rounded accent-[#2D72D2]" value="RANDOM_FOREST" checked onchange="onFsParamEdited()" />
+                <span class="font-semibold text-[#1C2127]">2. Random Forest</span>
+              </label>
+              <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[#DCE0E5] bg-[#F6F7F9] cursor-pointer select-none">
+                <input type="checkbox" class="fs-model-cb rounded accent-[#2D72D2]" value="GRADIENT_BOOSTING" checked onchange="onFsParamEdited()" />
+                <span class="font-semibold text-[#1C2127]">3. Gradient Boosted Trees</span>
+              </label>
+              <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[#DCE0E5] bg-[#F6F7F9] cursor-pointer select-none">
+                <input type="checkbox" class="fs-model-cb rounded accent-[#2D72D2]" value="PERMUTATION_RIDGE" checked onchange="onFsParamEdited()" />
+                <span class="font-semibold text-[#1C2127]">4. Permutation Ridge</span>
+              </label>
+              <label class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[#DCE0E5] bg-[#F6F7F9] cursor-pointer select-none">
+                <input type="checkbox" class="fs-model-cb rounded accent-[#2D72D2]" value="MUTUAL_INFO_RANK" checked onchange="onFsParamEdited()" />
+                <span class="font-semibold text-[#1C2127]">5. Mutual Info + Spearman</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 12 Editable Hyperparameters & Thresholds Grid -->
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 text-xs">
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamRegType" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Regularization Type</label>
+              <select id="fsParamRegType" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-semibold text-[#1C2127]">
+                <option value="L1">L1 (Sparse Lasso)</option>
+                <option value="ELASTIC_NET" selected>ELASTIC_NET (L1+L2)</option>
+                <option value="L2">L2 (Ridge Shrinkage)</option>
+              </select>
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamRegLambda" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Reg. Penalty (λ)</label>
+              <input id="fsParamRegLambda" type="number" min="0.005" max="0.50" step="0.005" value="0.075" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamMaxDepth" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Max Tree Depth (1–4)</label>
+              <input id="fsParamMaxDepth" type="number" min="1" max="4" step="1" value="2" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamMaxLeaves" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Max Leaves (2–16)</label>
+              <input id="fsParamMaxLeaves" type="number" min="2" max="16" step="1" value="4" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamNTrees" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">RF Trees (4–60)</label>
+              <input id="fsParamNTrees" type="number" min="4" max="60" step="2" value="24" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamEpochs" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Max Epochs / Stages</label>
+              <input id="fsParamEpochs" type="number" min="2" max="40" step="1" value="12" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamLearningRate" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">GBDT Learn Rate</label>
+              <input id="fsParamLearningRate" type="number" min="0.02" max="0.50" step="0.02" value="0.18" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamConvTol" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Convergence Tol</label>
+              <select id="fsParamConvTol" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]">
+                <option value="0.01">0.01 (Fast/Light)</option>
+                <option value="0.005">0.005 (Moderate)</option>
+                <option value="0.001" selected>0.001 (Balanced)</option>
+                <option value="0.0005">0.0005 (Strict)</option>
+                <option value="0.0001">0.0001 (Deep Tight)</option>
+              </select>
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamSplitBins" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Split Threshold Bins</label>
+              <select id="fsParamSplitBins" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-semibold text-[#1C2127]">
+                <option value="3">3 Bins (Coarse Fast)</option>
+                <option value="5" selected>5 Bins (Standard)</option>
+                <option value="7">7 Bins (Fine)</option>
+                <option value="9">9 Bins (Ultra-Fine)</option>
+              </select>
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamMinGain" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Min Impurity Gain</label>
+              <input id="fsParamMinGain" type="number" min="0.0" max="0.05" step="0.001" value="0.002" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamTopK" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Top-K Cutoff (3–15)</label>
+              <input id="fsParamTopK" type="number" min="3" max="15" step="1" value="5" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+
+            <div class="bg-white p-2 rounded border border-[#DCE0E5]">
+              <label for="fsParamConsensusMin" class="block text-[10px] font-bold uppercase text-[#5F6B7C]">Min Models Agree</label>
+              <input id="fsParamConsensusMin" type="number" min="1" max="5" step="1" value="4" onchange="onFsParamEdited()"
+                class="mt-1 w-full bg-white border border-[#DCE0E5] rounded px-2 py-1 text-xs font-mono font-bold text-[#1C2127]" />
+            </div>
+          </div>
+
+          <!-- Convergence & Execution Telemetry Strip -->
+          <div id="fsTelemetryBar" class="bg-white rounded border border-[#DCE0E5] px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2">
+            <span class="font-bold text-[#1C2127]">Convergence Telemetry:</span>
+            <span class="text-[#5F6B7C]">Select a mode or edit parameters above to inspect per-model epochs, tree leaves, and convergence speed.</span>
+          </div>
+        </div>
+
+        <!-- Row 4: Interactive Process Stage (STEP_A..STEP_E) & Sensor Category Parameter Selectors -->
         <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 text-xs">
           <div class="flex items-center gap-1.5 flex-wrap">
             <span class="font-bold text-[#5F6B7C] uppercase tracking-wider mr-1">Stage Subsets:</span>
@@ -545,14 +749,14 @@
           </div>
         </div>
 
-        <!-- Row 3: Expandable Hand-Pick Individual Parameters (100 Columns) Drawer -->
+        <!-- Row 5: Expandable Hand-Pick Individual Parameters (100 Columns) Drawer -->
         <details id="fsColumnPickerDetails" class="group rounded border border-[#DCE0E5] bg-[#F6F7F9]">
           <summary class="px-3 py-2 cursor-pointer select-none flex items-center justify-between text-xs font-bold text-[#1C2127] list-none">
             <div class="flex items-center gap-2">
               <svg class="w-3.5 h-3.5 text-[#2D72D2] transition-transform group-open:rotate-90" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M6 3l5 5-5 5V3z"/>
               </svg>
-              <span>Hand-Pick Individual Process Parameters for 5-Model Feature Selection (100 Columns)</span>
+              <span>Hand-Pick Individual Process Parameters for Multi-Model Feature Selection (100 Columns)</span>
               <span id="fsSelectedColCountBadge" class="px-2 py-0.5 rounded text-[11px] font-bold intent-blue">
                 52 / 100 Selected
               </span>
@@ -571,7 +775,7 @@
                 <button onclick="selectAllManualColumnsOnScreen3()" class="px-2.5 py-1 rounded text-xs bp-btn-default">Select All (100)</button>
                 <button onclick="clearManualColumnsOnScreen3()" class="px-2.5 py-1 rounded text-xs bp-btn-default">Clear All</button>
                 <button onclick="runMultiModelFeatureSelection()" class="px-3 py-1 rounded text-xs bp-btn-primary font-bold">
-                  Apply Subset &amp; Re-Run 5 ML Models
+                  Apply Subset &amp; Re-Run Models
                 </button>
               </div>
             </div>
@@ -588,7 +792,7 @@
         <div class="hero-kpi-card intent-emerald">
           <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
             <span>1. Consistent Hypotheses</span>
-            <span>≥4/5 Models Agree</span>
+            <span id="fsKpiMinModelsBadge">≥4/5 Models Agree</span>
           </div>
           <div id="fsKpiConsistentHero" class="hero-kpi-number">-- / --</div>
           <div id="fsKpiConsistentLabel" class="text-xs font-semibold text-[#1C2127]">
@@ -610,7 +814,7 @@
         <div class="hero-kpi-card bp-card">
           <div class="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-[#5F6B7C]">
             <span>3. Cross-Model Concordance</span>
-            <span class="text-[#2D72D2]">5 ML Families</span>
+            <span id="fsKpiActiveModelsBadge" class="text-[#2D72D2]">5 Active ML Models</span>
           </div>
           <div id="fsKpiConcordanceHero" class="hero-kpi-number text-[#2D72D2]">--%</div>
           <div id="fsKpiConcordanceLabel" class="text-xs font-semibold text-[#5F6B7C]">
@@ -723,6 +927,78 @@
     let currentRowOffset = 0;
     let currentRowLimit = 250;
     let currentTotalRows = 100;
+    let currentFsMode = 'BALANCED_FAB';
+
+    const FS_MODE_PRESETS = {
+      FAST_TRIAGE: {
+        mode_id: 'FAST_TRIAGE',
+        display_name: 'Fast Triage Mode',
+        active_models: ['L1_LASSO', 'MUTUAL_INFO_RANK', 'RANDOM_FOREST'],
+        regularization_type: 'L1',
+        reg_lambda: 0.25,
+        max_depth: 1,
+        max_leaves: 2,
+        n_trees: 8,
+        epochs: 20,
+        learning_rate: 0.25,
+        convergence_tol: 0.005,
+        split_threshold_bins: 3,
+        min_impurity_gain: 0.015,
+        top_k_cutoff: 5,
+        consensus_min_models: 2
+      },
+      BALANCED_FAB: {
+        mode_id: 'BALANCED_FAB',
+        display_name: 'Balanced Fab Standard',
+        active_models: ['L1_LASSO', 'RANDOM_FOREST', 'GRADIENT_BOOSTING', 'PERMUTATION_RIDGE', 'MUTUAL_INFO_RANK'],
+        regularization_type: 'L1',
+        reg_lambda: 0.12,
+        max_depth: 2,
+        max_leaves: 4,
+        n_trees: 20,
+        epochs: 60,
+        learning_rate: 0.15,
+        convergence_tol: 0.001,
+        split_threshold_bins: 5,
+        min_impurity_gain: 0.005,
+        top_k_cutoff: 5,
+        consensus_min_models: 4
+      },
+      DEEP_INTERACTION: {
+        mode_id: 'DEEP_INTERACTION',
+        display_name: 'Deep Interaction Hunt',
+        active_models: ['L1_LASSO', 'RANDOM_FOREST', 'GRADIENT_BOOSTING', 'PERMUTATION_RIDGE', 'MUTUAL_INFO_RANK'],
+        regularization_type: 'ELASTIC_NET',
+        reg_lambda: 0.06,
+        max_depth: 4,
+        max_leaves: 12,
+        n_trees: 40,
+        epochs: 120,
+        learning_rate: 0.10,
+        convergence_tol: 0.0002,
+        split_threshold_bins: 9,
+        min_impurity_gain: 0.001,
+        top_k_cutoff: 8,
+        consensus_min_models: 3
+      },
+      STRICT_AUDIT: {
+        mode_id: 'STRICT_AUDIT',
+        display_name: 'Strict Sparsity Audit',
+        active_models: ['L1_LASSO', 'RANDOM_FOREST', 'GRADIENT_BOOSTING', 'PERMUTATION_RIDGE', 'MUTUAL_INFO_RANK'],
+        regularization_type: 'L1',
+        reg_lambda: 0.35,
+        max_depth: 2,
+        max_leaves: 3,
+        n_trees: 25,
+        epochs: 90,
+        learning_rate: 0.10,
+        convergence_tol: 0.0005,
+        split_threshold_bins: 5,
+        min_impurity_gain: 0.012,
+        top_k_cutoff: 3,
+        consensus_min_models: 4
+      }
+    };
 
     // Clean Markdown-to-HTML renderer
     function renderMarkdown(mdText) {
@@ -1617,24 +1893,152 @@
     // ========================================================================
     // Screen 3: Multi-Model Feature Selection & Consistency Rendering
     // ========================================================================
-    function setTopKAndRun(k) {
-      currentTopKCutoff = k;
+    function updateFsModeButtonsUI() {
+      document.querySelectorAll('.fs-mode-card').forEach(btn => {
+        const m = btn.getAttribute('data-mode');
+        if (m === currentFsMode) {
+          btn.className = 'fs-mode-card text-left p-2.5 rounded border border-[#2D72D2] bg-[#EDF3FB] transition';
+        } else {
+          btn.className = 'fs-mode-card text-left p-2.5 rounded border border-[#DCE0E5] bg-white hover:bg-[#F6F7F9] transition';
+        }
+      });
+    }
+
+    function applyFsConfigToInputs(cfg) {
+      if (!cfg) return;
+      const activeSet = new Set(cfg.active_models || []);
+      document.querySelectorAll('.fs-model-chk').forEach(chk => {
+        chk.checked = activeSet.has(chk.value);
+      });
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined && val !== null) el.value = String(val);
+      };
+      setVal('fsParamRegType', cfg.regularization_type);
+      setVal('fsParamRegLambda', cfg.reg_lambda);
+      setVal('fsParamMaxDepth', cfg.max_depth);
+      setVal('fsParamMaxLeaves', cfg.max_leaves);
+      setVal('fsParamNTrees', cfg.n_trees);
+      setVal('fsParamEpochs', cfg.epochs);
+      setVal('fsParamLearningRate', cfg.learning_rate);
+      setVal('fsParamConvergenceTol', cfg.convergence_tol);
+      setVal('fsParamSplitBins', cfg.split_threshold_bins);
+      setVal('fsParamMinGain', cfg.min_impurity_gain);
+      setVal('fsParamTopK', cfg.top_k_cutoff);
+      setVal('fsParamConsensusMin', cfg.consensus_min_models);
+      currentTopKCutoff = Number(cfg.top_k_cutoff || 5);
       [3, 5, 10].forEach(val => {
         const btn = document.getElementById(`topKBtn${val}`);
         if (btn) {
-          btn.className = val === k
+          btn.className = val === currentTopKCutoff
             ? 'px-2.5 py-1 rounded text-xs bp-btn-primary'
             : 'px-2.5 py-1 rounded text-xs bp-btn-default';
         }
       });
+    }
+
+    function readFsConfigFromInputs() {
+      const checkedModels = Array.from(document.querySelectorAll('.fs-model-chk:checked')).map(c => c.value);
+      if (checkedModels.length === 0) {
+        const firstChk = document.querySelector('.fs-model-chk[value="L1_LASSO"]');
+        if (firstChk) firstChk.checked = true;
+        checkedModels.push('L1_LASSO');
+      }
+      const numVal = (id, fallback) => {
+        const el = document.getElementById(id);
+        if (!el) return fallback;
+        const parsed = Number(el.value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+      const topK = Math.max(1, Math.min(15, Math.round(numVal('fsParamTopK', currentTopKCutoff || 5))));
+      currentTopKCutoff = topK;
+      return {
+        active_models: checkedModels,
+        regularization_type: document.getElementById('fsParamRegType')?.value || 'L1',
+        reg_lambda: numVal('fsParamRegLambda', 0.12),
+        max_depth: Math.round(numVal('fsParamMaxDepth', 2)),
+        max_leaves: Math.round(numVal('fsParamMaxLeaves', 4)),
+        n_trees: Math.round(numVal('fsParamNTrees', 20)),
+        epochs: Math.round(numVal('fsParamEpochs', 60)),
+        learning_rate: numVal('fsParamLearningRate', 0.15),
+        convergence_tol: numVal('fsParamConvergenceTol', 0.001),
+        split_threshold_bins: Math.round(numVal('fsParamSplitBins', 5)),
+        min_impurity_gain: numVal('fsParamMinGain', 0.005),
+        top_k_cutoff: topK,
+        consensus_min_models: Math.round(numVal('fsParamConsensusMin', 4))
+      };
+    }
+
+    function onFsParamEdited() {
+      const preset = FS_MODE_PRESETS[currentFsMode] || FS_MODE_PRESETS.BALANCED_FAB;
+      const cur = readFsConfigFromInputs();
+      const diffs = [];
+      if (JSON.stringify(cur.active_models) !== JSON.stringify(preset.active_models)) diffs.push('active_models');
+      if (cur.regularization_type !== preset.regularization_type) diffs.push('reg_type');
+      if (Math.abs(cur.reg_lambda - preset.reg_lambda) > 1e-6) diffs.push('reg_lambda');
+      if (cur.max_depth !== preset.max_depth) diffs.push('max_depth');
+      if (cur.max_leaves !== preset.max_leaves) diffs.push('max_leaves');
+      if (cur.n_trees !== preset.n_trees) diffs.push('n_trees');
+      if (cur.epochs !== preset.epochs) diffs.push('epochs');
+      if (Math.abs(cur.learning_rate - preset.learning_rate) > 1e-6) diffs.push('learning_rate');
+      if (Math.abs(cur.convergence_tol - preset.convergence_tol) > 1e-7) diffs.push('convergence_tol');
+      if (cur.split_threshold_bins !== preset.split_threshold_bins) diffs.push('split_bins');
+      if (Math.abs(cur.min_impurity_gain - preset.min_impurity_gain) > 1e-6) diffs.push('min_gain');
+      if (cur.top_k_cutoff !== preset.top_k_cutoff) diffs.push('top_k');
+      if (cur.consensus_min_models !== preset.consensus_min_models) diffs.push('consensus_min');
+
+      const badge = document.getElementById('fsCustomOverrideBadge');
+      if (badge) {
+        if (diffs.length === 0) {
+          badge.className = 'px-2 py-0.5 rounded text-[11px] font-bold intent-blue';
+          badge.textContent = `Prefilled: ${preset.display_name}`;
+        } else {
+          badge.className = 'px-2 py-0.5 rounded text-[11px] font-bold intent-amber';
+          badge.textContent = `${preset.display_name} + ${diffs.length} Custom Edit${diffs.length > 1 ? 's' : ''} (${diffs.slice(0, 3).join(', ')})`;
+        }
+      }
+      [3, 5, 10].forEach(val => {
+        const btn = document.getElementById(`topKBtn${val}`);
+        if (btn) {
+          btn.className = val === cur.top_k_cutoff
+            ? 'px-2.5 py-1 rounded text-xs bp-btn-primary'
+            : 'px-2.5 py-1 rounded text-xs bp-btn-default';
+        }
+      });
+    }
+
+    function selectFsEngineeringMode(modeId) {
+      if (!FS_MODE_PRESETS[modeId]) return;
+      currentFsMode = modeId;
+      updateFsModeButtonsUI();
+      applyFsConfigToInputs(FS_MODE_PRESETS[modeId]);
+      onFsParamEdited();
+      runMultiModelFeatureSelection();
+    }
+
+    function resetFsModeToDefaults() {
+      const preset = FS_MODE_PRESETS[currentFsMode] || FS_MODE_PRESETS.BALANCED_FAB;
+      applyFsConfigToInputs(preset);
+      onFsParamEdited();
+      runMultiModelFeatureSelection();
+    }
+
+    function setTopKAndRun(k) {
+      currentTopKCutoff = k;
+      const topKEl = document.getElementById('fsParamTopK');
+      if (topKEl) topKEl.value = String(k);
+      onFsParamEdited();
       runMultiModelFeatureSelection();
     }
 
     async function runMultiModelFeatureSelection() {
       const container = document.getElementById('fsHypothesesContainer');
       const bypassSubsample = Boolean(document.getElementById('fsBypassSubsampleToggle')?.checked);
+      const modelConfig = readFsConfigFromInputs();
+      onFsParamEdited();
+
       if (container) {
-        container.innerHTML = `<div class="text-xs text-[#2D72D2] font-semibold animate-pulse p-4">Running L1 Lasso, Random Forest, Gradient Boosting, Permutation Ridge &amp; Mutual Information across ${currentTotalRows.toLocaleString()} wafers × ${selectedColumnsSet.size}/100 active columns${bypassSubsample ? ' (Full 50k Scan Mode)' : ''}...</div>`;
+        container.innerHTML = `<div class="text-xs text-[#2D72D2] font-semibold animate-pulse p-4">Running ${modelConfig.active_models.length} active ML models (${currentFsMode}, ${modelConfig.regularization_type} λ=${modelConfig.reg_lambda}, depth=${modelConfig.max_depth}, leaves=${modelConfig.max_leaves}, epochs=${modelConfig.epochs}) across ${currentTotalRows.toLocaleString()} wafers × ${selectedColumnsSet.size}/100 active columns${bypassSubsample ? ' (Full 50k Scan Mode)' : ''}...</div>`;
       }
 
       const res = await fetch('/api/feature_selection', {
@@ -1642,27 +2046,49 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           selected_columns: Array.from(selectedColumnsSet),
-          top_k_cutoff: currentTopKCutoff,
+          top_k_cutoff: modelConfig.top_k_cutoff,
           dataset_id: currentDatasetId,
-          bypass_subsample: bypassSubsample
+          bypass_subsample: bypassSubsample,
+          mode_id: currentFsMode,
+          model_config: modelConfig
         })
       });
       const payload = await res.json();
       const fs = payload.feature_selection;
       if (!fs) return;
 
+      const resolvedCfg = fs.resolved_config || modelConfig;
+      const activeCount = fs.active_models_count || (resolvedCfg.active_models || []).length || 5;
       const totalWafers = (fs.total_wafers_analyzed || currentTotalRows || 100).toLocaleString();
       const totalCells = (fs.total_cells_analyzed || ((fs.total_wafers_analyzed || 100) * fs.active_columns_count)).toLocaleString();
       const totalMs = fs.total_compute_ms ?? 0;
       const pm = fs.per_model_compute_ms || {};
+      const conv = fs.convergence_telemetry || {};
 
       document.getElementById('fsDatasetBadge').textContent =
-        `${fs.dataset_short_name} • ${totalWafers} Wafers × ${fs.active_columns_count}/100 Cols (${totalCells} Cells) • ${totalMs} ms`;
+        `${fs.dataset_short_name} • ${resolvedCfg.display_name || currentFsMode} • ${totalWafers} Wafers × ${fs.active_columns_count}/100 Cols (${totalCells} Cells) • ${totalMs} ms`;
+
+      const telemetryBar = document.getElementById('fsTelemetryBar');
+      if (telemetryBar) {
+        const lassoTel = conv.L1_LASSO || {};
+        const gbdtTel = conv.GRADIENT_BOOSTING || {};
+        const rfTel = conv.RANDOM_FOREST || {};
+        const lassoStr = lassoTel.active
+          ? `Linear (${lassoTel.reg_type} λ=${lassoTel.reg_lambda}): ${lassoTel.epochs_run}/${lassoTel.max_epochs} epochs ${lassoTel.converged_early ? '✓ Early-Stopped' : '• Full Run'}`
+          : 'Linear: Skipped';
+        const rfStr = rfTel.active
+          ? `RF: ${rfTel.n_trees} trees (depth≤${rfTel.max_depth}, leaves≤${rfTel.max_leaves})`
+          : 'RF: Skipped';
+        const gbdtStr = gbdtTel.active
+          ? `GBDT: ${gbdtTel.rounds_run}/${gbdtTel.max_epochs} rounds (lr=${gbdtTel.learning_rate}) ${gbdtTel.converged_early ? '✓ Converged' : ''}`
+          : 'GBDT: Skipped';
+        telemetryBar.textContent = `${lassoStr} | ${rfStr} | ${gbdtStr} | Top-${fs.top_k_cutoff} Consensus ≥ ${resolvedCfg.consensus_min_models}/${activeCount} models`;
+      }
 
       const kpis = fs.summary_kpis || {};
       document.getElementById('fsKpiConsistentHero').textContent = kpis.consistent_hypotheses_hero || '--';
       document.getElementById('fsKpiConsistentLabel').textContent = kpis.consistent_hypotheses_label || '';
-      document.getElementById('fsKpiTopFeatureHero').textContent = kpis.top_consensus_hero || '5 / 5';
+      document.getElementById('fsKpiTopFeatureHero').textContent = kpis.top_consensus_hero || `${activeCount} / ${activeCount}`;
       document.getElementById('fsKpiTopFeatureParam').textContent = kpis.top_consensus_param || '';
       document.getElementById('fsKpiTopRankBadge').textContent = kpis.top_consensus_rank || 'Avg Rank #1.0';
       document.getElementById('fsKpiConcordanceHero').textContent = kpis.ensemble_agreement_hero || '90%';
@@ -1679,6 +2105,15 @@
             : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#F6F7F9] text-[#5F6B7C] border border-[#DCE0E5]">CANDIDATE</span>');
 
         const modelPills = (h.per_model_breakdown || []).map(m => {
+          if (m.is_active === false) {
+            return `
+              <div class="rounded border px-2 py-1.5 flex flex-col items-center justify-center text-center bg-[#F6F7F9] text-[#8F99A8] border-[#DCE0E5] opacity-60">
+                <span class="text-[10px] uppercase tracking-tight">${m.short_name}</span>
+                <span class="text-xs font-mono font-bold mt-0.5">SKIPPED</span>
+                <span class="text-[10px]">Disabled in Mode</span>
+              </div>
+            `;
+          }
           const pillCls = m.in_top_k
             ? 'intent-emerald font-bold'
             : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]';
@@ -1705,7 +2140,7 @@
                   ${h.consistency_verdict}
                 </span>
                 <button onclick="dropColumnAndRerunFs('${h.primary_column}')"
-                  title="Drop ${h.primary_column} from active parameter subset and re-run 5 ML models"
+                  title="Drop ${h.primary_column} from active parameter subset and re-run active ML models"
                   class="px-2 py-0.5 rounded text-[10px] bp-btn-danger">
                   ✕ Drop Param
                 </button>
@@ -1716,7 +2151,7 @@
             <div class="grid grid-cols-2 gap-3">
               <div class="cand-kpi-box ${intentCls}">
                 <div class="text-[10px] font-bold uppercase tracking-wider opacity-85">
-                  Top-${fs.top_k_cutoff} Model Consensus
+                  Top-${fs.top_k_cutoff} Model Consensus (${activeCount} Active)
                 </div>
                 <div class="cand-kpi-num">${h.consistency_hero}</div>
                 <div class="text-[10px] font-semibold opacity-90">${h.consistency_label}</div>
@@ -1724,7 +2159,7 @@
 
               <div class="cand-kpi-box intent-blue">
                 <div class="text-[10px] font-bold uppercase tracking-wider opacity-85">
-                  Mean Feature Rank (5 ML Models)
+                  Mean Feature Rank (${activeCount} Active ML Models)
                 </div>
                 <div class="cand-kpi-ceteris">${h.mean_rank_hero}</div>
                 <div class="text-[10px] font-semibold opacity-90">Avg Importance: ${h.mean_importance_pct}%</div>
@@ -1749,10 +2184,13 @@
       const topFeats = fs.global_top_features || [];
       tbody.innerHTML = topFeats.map((f, rIdx) => {
         const rowBg = rIdx % 2 === 0 ? 'bg-white' : 'bg-[#F6F7F9]';
-        const consCls = f.models_in_top_k >= 4
+        const consCls = f.models_in_top_k >= (resolvedCfg.consensus_min_models || 4)
           ? 'intent-emerald'
-          : (f.models_in_top_k >= 2 ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
+          : (f.models_in_top_k >= Math.max(1, Math.ceil(activeCount / 2)) ? 'intent-amber' : 'bg-[#F6F7F9] text-[#5F6B7C] border-[#DCE0E5]');
         const rkCells = (f.per_model_ranks || []).map(m => {
+          if (m.is_active === false || m.rank === null) {
+            return `<td class="py-1.5 px-2 border-b border-r border-[#DCE0E5] text-center text-[#8F99A8]">--</td>`;
+          }
           const cCls = m.in_top_k ? 'text-[#238551] font-bold' : 'text-[#5F6B7C]';
           return `<td class="py-1.5 px-2 border-b border-r border-[#DCE0E5] text-center ${cCls}">#${m.rank}</td>`;
         }).join('');
@@ -1772,7 +2210,7 @@
                   + Queue
                 </button>
                 <button onclick="dropColumnAndRerunFs('${f.column}')"
-                  title="Drop ${f.column} and re-run 5 ML models"
+                  title="Drop ${f.column} and re-run active ML models"
                   class="px-1.5 py-0.5 rounded text-[10px] bp-btn-danger">
                   ✕ Drop
                 </button>
@@ -1782,14 +2220,15 @@
         `;
       }).join('');
 
-      // Render Grouped Bar Chart of Cross-Model Importance
+      // Render Grouped Bar Chart of Cross-Model Importance (active models)
       const chartCanvas = document.getElementById('fsMultiModelChart');
       if (fsChartInstance) {
         fsChartInstance.destroy();
       }
       const chartHyps = hyps.slice(0, 6);
       const modelPalette = ['#2D72D2', '#238551', '#C87619', '#5F6B7C', '#CD4246'];
-      const datasets = (fs.models_metadata || []).map((m, mIdx) => ({
+      const activeModelsMeta = (fs.models_metadata || []).filter(m => m.is_active !== false);
+      const datasets = activeModelsMeta.map((m, mIdx) => ({
         label: m.short_name,
         data: chartHyps.map(h => {
           const found = (h.per_model_breakdown || []).find(b => b.model_id === m.model_id);
@@ -1840,6 +2279,12 @@
           updateBatchButtonsUI();
         }
         updateDatasetCardsUI();
+      }
+      if (params.get('mode') && FS_MODE_PRESETS[params.get('mode')]) {
+        currentFsMode = params.get('mode');
+        updateFsModeButtonsUI();
+        applyFsConfigToInputs(FS_MODE_PRESETS[currentFsMode]);
+        onFsParamEdited();
       }
       await loadPreprocessPreview();
       await refreshObservability();
