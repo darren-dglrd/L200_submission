@@ -67,7 +67,7 @@ except ImportError:
 
 
 def _invoke_live_llm_agent(grounded_prompt: str, enable_live_llm: bool = False) -> Tuple[Optional[str], str]:
-    """Invoke live Gemini LLM via Google GenAI REST API (`gemini-2.5-flash`).
+    """Invoke live Gemini LLM via the public Google GenAI REST API (`gemini-2.5-flash`).
 
     Returns (llm_response_text_or_None, backing_engine_name).
     """
